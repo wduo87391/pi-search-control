@@ -4,18 +4,19 @@ import { parseConfig } from '../src/config.ts';
 
 const base = {
   provider: 'balanced',
-  providers: ['exa', 'tavily', 'brave'],
+  providers: ['exa', 'tavily', 'brave', 'doubao'],
   apiKeys: {
     exa: ['exa1'],
     tavily: ['tvly1', 'tvly2', 'tvly1'],
-    brave: ['brave1']
+    brave: ['brave1'],
+    doubao: ['doubao1']
   }
 };
 
 test('parseConfig accepts only the new apiKeys format and deduplicates keys', () => {
   const config = parseConfig(base, 'test.json');
   assert.equal(config.provider, 'balanced');
-  assert.deepEqual(config.providers, ['exa', 'tavily', 'brave']);
+  assert.deepEqual(config.providers, ['exa', 'tavily', 'brave', 'doubao']);
   assert.deepEqual(config.apiKeys.tavily, ['tvly1', 'tvly2']);
   assert.equal(config.search.numResults, 5);
   assert.equal(config.fetch.maxChars, 30000);

@@ -1,7 +1,7 @@
 {
   "name": "pi-web-lite",
   "version": "0.1.0",
-  "description": "Lightweight web_search and fetch tools for Pi with Exa, Tavily, Brave, auto priority, and balanced provider-key pools.",
+  "description": "Lightweight web_search and fetch tools for Pi with Exa, Tavily, Brave, Doubao, auto priority, and balanced provider-key pools.",
   "type": "module",
   "scripts": {
     "check": "node --input-type=module -e \"await import('./src/config.ts'); await import('./src/search.ts'); await import('./src/fetch.ts')\" && node --input-type=module -e \"try { await import('./src/index.ts') } catch (err) { if (err?.code === 'ERR_MODULE_NOT_FOUND') process.exit(0); throw err }\"" ,
@@ -16,7 +16,8 @@
     "fetch",
     "exa",
     "tavily",
-    "brave"
+    "brave",
+    "doubao"
   ],
   "license": "MIT",
   "repository": {

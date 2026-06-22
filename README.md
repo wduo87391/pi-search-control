@@ -2,7 +2,7 @@
 
 Lightweight web access package for Pi. It registers only two tools:
 
-- `web_search` — search with Exa, Tavily, and Brave Search
+- `web_search` — search with Exa, Tavily, Brave Search, and Doubao Search
 - `fetch` — fetch URL content directly
 
 No curator UI, no browser cookie access, no Gemini/Perplexity, no video analysis, no background servers, no storage cache, and no package runtime dependencies.
@@ -14,11 +14,12 @@ No curator UI, no browser cookie access, no Gemini/Perplexity, no video analysis
 ```json
 {
   "provider": "balanced",
-  "providers": ["exa", "tavily", "brave"],
+  "providers": ["exa", "tavily", "brave", "doubao"],
   "apiKeys": {
     "exa": ["exa-key-1"],
     "tavily": ["tavily-key-1", "tavily-key-2"],
-    "brave": ["brave-key-1", "brave-key-2"]
+    "brave": ["brave-key-1", "brave-key-2"],
+    "doubao": ["doubao-key-1"]
   },
   "search": {
     "numResults": 5,
@@ -36,6 +37,7 @@ Legacy fields are intentionally rejected:
 - `exaApiKey`, `exaApiKeys`
 - `tavilyApiKey`, `tavilyApiKeys`
 - `braveApiKey`, `braveApiKeys`
+- `doubaoApiKey`, `doubaoApiKeys`
 - `loadBalancing`, `workflow`, `geminiApiKey`, `perplexityApiKey`
 
 ## Provider modes
@@ -49,11 +51,12 @@ Example:
 ```json
 {
   "provider": "balanced",
-  "providers": ["exa", "tavily", "brave"],
+  "providers": ["exa", "tavily", "brave", "doubao"],
   "apiKeys": {
     "exa": ["exa1"],
     "tavily": ["tvly1", "tvly2"],
-    "brave": ["brave1", "brave2"]
+    "brave": ["brave1", "brave2"],
+    "doubao": ["doubao1"]
   }
 }
 ```
@@ -66,6 +69,7 @@ tavily:tvly1
 tavily:tvly2
 brave:brave1
 brave:brave2
+doubao:doubao1
 ```
 
 Each target has equal probability.
@@ -77,7 +81,7 @@ Uses `providers` as the priority order. Keys within the same provider are shuffl
 ```json
 {
   "provider": "auto",
-  "providers": ["tavily", "exa", "brave"]
+  "providers": ["tavily", "exa", "brave", "doubao"]
 }
 ```
 

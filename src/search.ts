@@ -1,6 +1,7 @@
 import type { Provider, ProviderMode, WebLiteConfig } from "./config.ts";
 import { formatSearchMarkdown, isAbortError, keyId, shuffle, type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
+import { searchDoubao } from "./providers/doubao.ts";
 import { searchExa } from "./providers/exa.ts";
 import { searchTavily } from "./providers/tavily.ts";
 
@@ -48,7 +49,8 @@ export function buildSearchPlan(config: WebLiteConfig, mode: ProviderMode = conf
 async function searchWithTarget(target: SearchTarget, query: string, options: SearchOptions): Promise<SearchResponse> {
 	if (target.provider === "exa") return searchExa(query, target.apiKey, options);
 	if (target.provider === "tavily") return searchTavily(query, target.apiKey, options);
-	return searchBrave(query, target.apiKey, options);
+	if (target.provider === "brave") return searchBrave(query, target.apiKey, options);
+	return searchDoubao(query, target.apiKey, options);
 }
 
 function errorMessage(err: unknown): string {
