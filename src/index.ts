@@ -39,7 +39,6 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. Prefer queries for multi-angle research." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple search queries, executed independently." })),
-			numResults: Type.Optional(Type.Number({ description: "Results per query. Defaults to ~/.pi/web-search.json search.numResults, max 20." })),
 		}),
 		renderCall(args, theme) {
 			const queries = normalizeList((args as { query?: unknown }).query, (args as { queries?: unknown }).queries);
@@ -71,9 +70,7 @@ export default function (pi: ExtensionAPI) {
 
 			const config = loadConfig();
 			const results: Array<(RoutedSearchResult & { attempts: FailedAttempt[] }) | { query: string; error: string }> = [];
-			const numResults = typeof params.numResults === "number"
-				? Math.min(Math.max(1, Math.floor(params.numResults)), 20)
-				: config.search.numResults;
+			const numResults = config.search.numResults;
 
 			for (let i = 0; i < queries.length; i++) {
 				const query = queries[i];

@@ -112,12 +112,11 @@ or:
   "queries": [
     "React 19 compiler performance",
     "React 19 compiler migration pitfalls"
-  ],
-  "numResults": 5
+  ]
 }
 ```
 
-Provider and key are chosen by config only. The result includes a hashed `keyId` such as `tavily#12ab34cd` so you can verify balancing without leaking API keys.
+Provider, key, and result count are chosen by config only. The result includes a hashed `keyId` such as `tavily#12ab34cd` so you can verify balancing without leaking API keys.
 
 ### `fetch`
 
