@@ -7,6 +7,31 @@ Lightweight web access package for Pi. It registers only two tools:
 
 No curator UI, no browser cookie access, no Gemini/Perplexity, no video analysis, no background servers, no storage cache, and no package runtime dependencies.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    Agent[Pi agent] --> Search[web_search]
+    Agent --> Fetch[fetch]
+    Config[web-search.json] --> Router[Provider/key routing]
+    Search --> Router
+    Router --> Exa[Exa]
+    Router --> Tavily[Tavily]
+    Router --> Brave[Brave]
+    Router --> Doubao[Doubao]
+    Exa --> Normalize[Normalize and format results]
+    Tavily --> Normalize
+    Brave --> Normalize
+    Doubao --> Normalize
+    Normalize --> Agent
+    Fetch --> GitHub[GitHub API for GitHub URLs]
+    Fetch --> HTTP[Direct HTTP fetch]
+    GitHub --> Agent
+    HTTP --> Agent
+```
+
+`balanced` mode shuffles every provider/key pair in one pool. `auto` preserves provider priority while rotating keys inside each provider. Failed targets fall through to the next target in the generated plan.
+
 ## Configuration
 
 `pi-web-lite` reads **only** the new format at `~/.pi/web-search.json`:
@@ -144,10 +169,10 @@ GitHub URLs use the GitHub API for stable extraction:
 
 ## Install
 
-For local testing:
+For local testing from a cloned repository:
 
 ```bash
-pi -e /home/youngshine/pi-web-lite
+pi -e ./src/index.ts
 ```
 
 After publishing to GitHub:
@@ -157,3 +182,7 @@ pi install git:github.com/smithyyang/pi-web-lite
 ```
 
 Disable/remove the old `pi-web-access` package first if both register `web_search`.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
