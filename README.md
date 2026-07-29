@@ -169,16 +169,17 @@ GitHub URLs use the GitHub API for stable extraction:
 
 ## Install
 
-For local testing from a cloned repository:
+Install from npm:
 
 ```bash
-pi -e ./src/index.ts
+pi install npm:pi-web-lite
 ```
 
-After publishing to GitHub:
+Git and local development alternatives:
 
 ```bash
 pi install git:github.com/smithyyang/pi-web-lite
+pi -e ./src/index.ts
 ```
 
 Disable/remove the old `pi-web-access` package first if both register `web_search`.
