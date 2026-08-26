@@ -133,7 +133,8 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): WebLiteConf
 			doubao: normalizeKeys(apiKeysRaw.doubao, "doubao"),
 		},
 		search: {
-			numResults: Math.min(normalizeNumber(searchRaw.numResults, DEFAULT_SEARCH.numResults, "search.numResults"), 20),
+			// Respect user-configured value; provider APIs enforce their own caps.
+			numResults: normalizeNumber(searchRaw.numResults, DEFAULT_SEARCH.numResults, "search.numResults"),
 			timeoutMs: normalizeNumber(searchRaw.timeoutMs, DEFAULT_SEARCH.timeoutMs, "search.timeoutMs"),
 		},
 		fetch: {
