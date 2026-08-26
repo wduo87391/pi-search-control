@@ -13,13 +13,14 @@ interface TavilyResponse {
 }
 
 export async function searchTavily(query: string, apiKey: string, options: SearchOptions): Promise<SearchResponse> {
+	const numResults = Math.min(options.numResults, 20);
 	const response = await fetch(TAVILY_API_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
 			api_key: apiKey,
 			query,
-			max_results: options.numResults,
+			max_results: numResults,
 			search_depth: "basic",
 			include_answer: true,
 		}),
@@ -40,7 +41,7 @@ export async function searchTavily(query: string, apiKey: string, options: Searc
 			url: item.url,
 			snippet: cleanText(item.content),
 		});
-		if (results.length >= options.numResults) break;
+		if (results.length >= numResults) break;
 	}
 
 	return {

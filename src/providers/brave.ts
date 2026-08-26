@@ -25,9 +25,11 @@ function normalizeSnippet(value: unknown): string | null {
 }
 
 export async function searchBrave(query: string, apiKey: string, options: SearchOptions): Promise<SearchResponse> {
+	const numResults = Math.min(options.numResults, 50);
 	const url = new URL(BRAVE_LLM_CONTEXT_URL);
 	url.searchParams.set("q", query);
-	url.searchParams.set("count", String(options.numResults));
+	url.searchParams.set("count", String(numResults));
+	url.searchParams.set("maximum_number_of_urls", String(numResults));
 
 	const response = await fetch(url, {
 		headers: {
@@ -61,7 +63,7 @@ export async function searchBrave(query: string, apiKey: string, options: Search
 			snippet: snippets.join("\n\n"),
 		});
 		seen.add(item.url);
-		if (results.length >= options.numResults) break;
+		if (results.length >= numResults) break;
 	}
 
 	return { answer: "", results };

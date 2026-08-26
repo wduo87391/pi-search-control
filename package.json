@@ -1,6 +1,6 @@
 {
   "name": "pi-web-lite",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Lightweight web_search and fetch tools for Pi with Exa, Tavily, Brave, Doubao, auto priority, and balanced provider-key pools.",
   "type": "module",
   "scripts": {

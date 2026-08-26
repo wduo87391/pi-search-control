@@ -42,6 +42,7 @@ function responseError(data: DoubaoResponse): string | null {
 }
 
 export async function searchDoubao(query: string, apiKey: string, options: SearchOptions): Promise<SearchResponse> {
+	const numResults = Math.min(options.numResults, 50);
 	const response = await fetch(DOUBAO_SEARCH_URL, {
 		method: "POST",
 		headers: {
@@ -52,7 +53,7 @@ export async function searchDoubao(query: string, apiKey: string, options: Searc
 		body: JSON.stringify({
 			Query: query,
 			SearchType: "web",
-			Count: options.numResults,
+			Count: numResults,
 			Filter: {
 				NeedContent: false,
 				NeedUrl: true,
@@ -88,7 +89,7 @@ export async function searchDoubao(query: string, apiKey: string, options: Searc
 			snippet: cleanText(item.Summary || item.Snippet || item.Content, 1200),
 		});
 		seen.add(item.Url);
-		if (results.length >= options.numResults) break;
+		if (results.length >= numResults) break;
 	}
 
 	return { answer: "", results };

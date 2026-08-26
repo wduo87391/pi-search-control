@@ -50,6 +50,7 @@ function mapResults(results: ExaSearchResponse["results"], numResults: number): 
 }
 
 export async function searchExa(query: string, apiKey: string, options: SearchOptions): Promise<SearchResponse> {
+	const numResults = Math.min(options.numResults, 100);
 	const response = await fetch(EXA_SEARCH_URL, {
 		method: "POST",
 		headers: {
@@ -59,7 +60,7 @@ export async function searchExa(query: string, apiKey: string, options: SearchOp
 		body: JSON.stringify({
 			query,
 			type: "auto",
-			numResults: options.numResults,
+			numResults,
 			contents: {
 				text: { maxCharacters: 1000 },
 				highlights: true,
@@ -76,6 +77,6 @@ export async function searchExa(query: string, apiKey: string, options: SearchOp
 	const data = await response.json() as ExaSearchResponse;
 	return {
 		answer: buildAnswer(data.results),
-		results: mapResults(data.results, options.numResults),
+		results: mapResults(data.results, numResults),
 	};
 }
