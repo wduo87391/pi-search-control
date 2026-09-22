@@ -9,6 +9,7 @@ import {
   activeCooldowns,
   createMemoryHealthStore
 } from '../src/health.ts';
+import { createThresholdWarner } from '../src/thresholds.ts';
 
 const NOW = Date.UTC(2026, 9, 20, 12, 0, 0); // 2026-10-20T12:00:00Z
 
@@ -413,4 +414,134 @@ test('a profile with no available credentials keeps the existing message style',
     () => orchestrateSearch(input({ profile: tavilyOnly }), deps),
     /No available credentials for Search Profile "tavily"\. Unavailable: tvly-work, tvly-personal\./
   );
+});
+
+// --- Threshold demotion (ticket 08) ---
+
+const thresholdConfig = parseConfig(
+  {
+    defaultProfile: 'exa-pair',
+    profiles: {
+      'exa-pair': { providers: ['exa'] },
+      'tvly-solo': { providers: ['tavily'] }
+    },
+    credentials: {
+      exa: [
+        { alias: 'exa-fresh', env: 'EXA_FRESH' },
+        { alias: 'exa-crossed', env: 'EXA_CROSSED', threshold: 2 }
+      ],
+      tavily: [{ alias: 'tvly-solo', env: 'TVLY_SOLO', threshold: 1 }],
+      brave: []
+    }
+  },
+  'test.json'
+);
+const thresholdEnv = { EXA_FRESH: 'fresh-secret', EXA_CROSSED: 'crossed-secret', TVLY_SOLO: 'solo-secret' };
+const exaPair = { name: 'exa-pair', providers: ['exa'] };
+const tvlySolo = { name: 'tvly-solo', providers: ['tavily'] };
+
+function thresholdDeps(attemptsByAlias, overrides = {}) {
+  return makeDeps({
+    resolveCredentials: (cfg) => resolveCredentials(cfg.credentials, thresholdEnv),
+    ledger: { attemptsByAlias: () => attemptsByAlias, record: () => {} },
+    ...overrides
+  });
+}
+
+test('a threshold-crossed credential is demoted behind a non-demoted peer in the same provider', async () => {
+  // Without demotion exa-crossed (2 attempts) would lead exa-fresh (5 attempts).
+  const { deps } = thresholdDeps({ 'exa-fresh': [NOW, NOW, NOW, NOW, NOW], 'exa-crossed': [NOW, NOW] });
+  const calls = [];
+  deps.search = async (target) => {
+    calls.push(target.alias);
+    return okResponse();
+  };
+
+  const result = await orchestrateSearch(input({ config: thresholdConfig, profile: exaPair }), deps);
+
+  assert.equal(result.alias, 'exa-fresh');
+  assert.deepEqual(calls, ['exa-fresh']);
+});
+
+test('a demoted credential is still used when it is the only candidate', async () => {
+  const { deps } = thresholdDeps({ 'tvly-solo': [NOW] });
+  const calls = [];
+  deps.search = async (target) => {
+    calls.push(target.alias);
+    return okResponse();
+  };
+
+  const result = await orchestrateSearch(input({ config: thresholdConfig, profile: tvlySolo }), deps);
+
+  assert.equal(result.alias, 'tvly-solo');
+  assert.deepEqual(calls, ['tvly-solo']);
+});
+
+test('no configured threshold means no demotion and no warning', async () => {
+  const plainConfig = parseConfig(
+    {
+      defaultProfile: 'solo',
+      profiles: { solo: { providers: ['exa'] } },
+      credentials: { exa: [{ alias: 'exa-plain', env: 'EXA_PLAIN' }] }
+    },
+    'test.json'
+  );
+  const crossings = [];
+  const { deps } = makeDeps({
+    resolveCredentials: (cfg) => resolveCredentials(cfg.credentials, { EXA_PLAIN: 'plain-secret' }),
+    ledger: { attemptsByAlias: () => ({ 'exa-plain': [NOW, NOW, NOW, NOW, NOW, NOW, NOW, NOW] }), record: () => {} },
+    onThresholdCrossings: (value) => crossings.push(...value)
+  });
+
+  const result = await orchestrateSearch(
+    input({ config: plainConfig, profile: { name: 'solo', providers: ['exa'] } }),
+    deps
+  );
+
+  assert.equal(result.alias, 'exa-plain');
+  assert.deepEqual(crossings, [], 'no threshold configured, so no crossing is reported');
+});
+
+test('cooling beats demotion: a crossed-and-cooling credential is excluded, not merely demoted', async () => {
+  const { deps } = thresholdDeps(
+    { 'exa-crossed': [NOW, NOW] },
+    { health: { penalties: () => ({ 'exa-crossed': 'cooling' }), record: () => {} } }
+  );
+  const calls = [];
+  deps.search = async (target) => {
+    calls.push(target.alias);
+    throw new Error('401 unauthorized');
+  };
+
+  await assert.rejects(
+    () => orchestrateSearch(input({ config: thresholdConfig, profile: exaPair }), deps),
+    (err) => {
+      assert.equal(err.name, 'SearchFailureError');
+      assert.deepEqual(err.attempts.map((attempt) => attempt.alias), ['exa-fresh']);
+      return true;
+    }
+  );
+  assert.deepEqual(calls, ['exa-fresh'], 'the cooling credential is never attempted');
+});
+
+test('threshold crossings reach the edge warning sink, which deduplicates per period', async () => {
+  const warner = createThresholdWarner();
+  const warnings = [];
+  let clock = NOW;
+  let attempts = { 'tvly-solo': [NOW] };
+  const { deps } = thresholdDeps(attempts, {
+    now: () => clock,
+    ledger: { attemptsByAlias: () => attempts, record: () => {} },
+    onThresholdCrossings: (crossings) => warnings.push(...warner.warningsFor(crossings))
+  });
+
+  await orchestrateSearch(input({ config: thresholdConfig, profile: tvlySolo }), deps);
+  await orchestrateSearch(input({ config: thresholdConfig, profile: tvlySolo }), deps);
+  assert.equal(warnings.length, 1, 'repeat search in the same period warns once');
+  assert.match(warnings[0], /"tvly-solo"/);
+
+  clock = Date.UTC(2026, 10, 5, 12, 0, 0);
+  attempts = { 'tvly-solo': [clock] };
+  await orchestrateSearch(input({ config: thresholdConfig, profile: tvlySolo }), deps);
+  assert.equal(warnings.length, 2, 'the next period warns again');
 });

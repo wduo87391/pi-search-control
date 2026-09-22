@@ -47,3 +47,7 @@ _Avoid_: Quota, billing cycle
 **Credential cooldown**:
 A time-bounded, cross-session exclusion from routing entered after a credential hits a rate limit or a transient failure; it always expires and never applies to authentication failures or aborts.
 _Avoid_: Ban, disable, backoff
+
+**Credential threshold**:
+The optional per-usage-period Provider Attempt count at which a credential is demoted in routing and the user is warned by alias; crossing it lowers priority and never disables the credential.
+_Avoid_: Quota limit, hard cap, budget

@@ -165,3 +165,28 @@ test('parseConfig rejects a credential entry that is not an object', () => {
     /expected an object with alias and env/
   );
 });
+
+test('parseConfig accepts a per-credential threshold and leaves it undefined when omitted', () => {
+  const withThreshold = parseConfig(
+    { ...base, credentials: { exa: [{ alias: 'exa-main', env: 'EXA_API_KEY', threshold: 5 }] } },
+    'test.json'
+  );
+  assert.equal(withThreshold.credentials.exa[0].threshold, 5);
+
+  const without = parseConfig(base, 'test.json');
+  assert.equal(without.credentials.exa[0].threshold, undefined);
+});
+
+test('parseConfig rejects invalid thresholds in the existing error style', () => {
+  const withThreshold = (threshold) => ({
+    ...base,
+    credentials: { exa: [{ alias: 'exa-main', env: 'EXA_API_KEY', threshold }] }
+  });
+  for (const bad of [0, -1, 1.5, '5', null, Number.POSITIVE_INFINITY, Number.NaN]) {
+    assert.throws(
+      () => parseConfig(withThreshold(bad), 'test.json'),
+      /Invalid threshold for credential "exa-main" in credentials\.exa in test\.json: expected a finite integer >= 1/,
+      `threshold ${String(bad)} must be rejected`
+    );
+  }
+});

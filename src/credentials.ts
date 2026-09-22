@@ -12,6 +12,11 @@ export interface ResolvedCredential {
 	 * credential so the pure plan builder can scope attempt counts per period.
 	 */
 	period: UsagePeriod;
+	/**
+	 * Optional per-period local warning threshold from the declaration. Absent
+	 * means no threshold behaviour for this credential.
+	 */
+	threshold?: number;
 }
 
 /**
@@ -32,13 +37,15 @@ export function resolveCredentials(
 		for (const declaration of credentials[provider]) {
 			const value = env[declaration.env];
 			const apiKey = typeof value === "string" ? value.trim() : "";
-			resolved.push({
+			const resolvedCredential: ResolvedCredential = {
 				provider,
 				alias: declaration.alias,
 				apiKey,
 				available: apiKey !== "",
 				period: declaration.period ?? DEFAULT_USAGE_PERIOD,
-			});
+			};
+			if (declaration.threshold !== undefined) resolvedCredential.threshold = declaration.threshold;
+			resolved.push(resolvedCredential);
 		}
 	}
 	return resolved;

@@ -44,6 +44,13 @@ export interface CredentialDeclaration {
 	 * that via DEFAULT_USAGE_PERIOD in ./selection.ts.
 	 */
 	period?: UsagePeriod;
+	/**
+	 * Optional per-period local warning threshold: the number of Provider Attempts
+	 * in the credential's active usage period at which routing demotes it and the
+	 * control plane warns. It is an attempt count, never a cost. Absent means no
+	 * threshold behaviour at all for this credential.
+	 */
+	threshold?: number;
 }
 
 export interface SearchControlConfig {
@@ -136,8 +143,10 @@ function normalizeCredentials(value: unknown, sourcePath: string): Record<Provid
 			}
 			aliasOwner.set(alias, key);
 			const period = normalizePeriod(declaration.period, alias, key, sourcePath);
+			const threshold = normalizeThreshold(declaration.threshold, alias, key, sourcePath);
 			const normalized: CredentialDeclaration = { alias, env };
 			if (period !== undefined) normalized.period = period;
+			if (threshold !== undefined) normalized.threshold = threshold;
 			credentials[key].push(normalized);
 		}
 	}
@@ -182,6 +191,22 @@ function normalizePeriod(
 		);
 	}
 	return { kind };
+}
+
+function normalizeThreshold(
+	value: unknown,
+	alias: string,
+	provider: Provider,
+	sourcePath: string,
+): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+		throw new Error(
+			`Invalid threshold for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			"expected a finite integer >= 1."
+		);
+	}
+	return value;
 }
 
 function normalizeEstimates(value: unknown, sourcePath: string): Record<Provider, EstimatorRule> {

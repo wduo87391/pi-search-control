@@ -18,6 +18,12 @@ import {
 } from "./ledger.ts";
 import type { PenaltyState } from "./selection.ts";
 import {
+	mergePenalties,
+	thresholdCrossings,
+	thresholdPenalties,
+	type ThresholdCrossing,
+} from "./thresholds.ts";
+import {
 	SearchFailureError,
 	buildSearchPlan,
 	noUsableCredentialsMessage,
@@ -76,6 +82,12 @@ export interface OrchestratorDeps {
 	resolveCredentials(config: SearchControlConfig): ResolvedCredential[];
 	ledger: LedgerPort;
 	health: HealthPort;
+	/**
+	 * Optional sink for threshold crossings. The orchestrator computes them once
+	 * per query and hands them to the edge, which deduplicates and surfaces the
+	 * warnings; it owns no warning state itself.
+	 */
+	onThresholdCrossings?(crossings: readonly ThresholdCrossing[]): void;
 }
 
 /** Ledger port that records nothing and reports no history. */
@@ -260,10 +272,18 @@ export async function orchestrateSearch(
 	const { config, profile, sessionId, options = {} } = query;
 	const at = deps.now();
 	const credentials = deps.resolveCredentials(config);
+	const attemptsByAlias = deps.ledger.attemptsByAlias(at);
+	const crossings = thresholdCrossings(credentials, attemptsByAlias, at);
+	deps.onThresholdCrossings?.(crossings);
 	const plan = buildSearchPlan(profile, credentials, {
 		now: at,
-		attemptsByAlias: deps.ledger.attemptsByAlias(at),
-		penalties: deps.health.penalties(at),
+		attemptsByAlias,
+		// Threshold demotion never excludes; a cooling credential still wins and is
+		// excluded by the selector.
+		penalties: mergePenalties(
+			deps.health.penalties(at),
+			thresholdPenalties(credentials, attemptsByAlias, at),
+		),
 	});
 	const requestId = deps.newRequestId();
 	if (plan.length === 0) {

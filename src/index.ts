@@ -14,6 +14,7 @@ import {
 	summarizePeriod,
 } from "./ledger.ts";
 import { searchWithTarget } from "./search.ts";
+import { createThresholdWarner, describeThresholds } from "./thresholds.ts";
 import {
 	createHealthPort,
 	createLedgerPort,
@@ -57,6 +58,8 @@ export default function (pi: ExtensionAPI) {
 	let profileWarning: string | undefined;
 	let ledgerWarning: string | undefined;
 	let healthWarning: string | undefined;
+	const thresholdWarner = createThresholdWarner();
+	let thresholdWarnings: string[] = [];
 	const ledgerStore = createFileLedgerStore();
 	const healthStore = createFileHealthStore();
 	const orchestratorDeps: OrchestratorDeps = {
@@ -66,6 +69,9 @@ export default function (pi: ExtensionAPI) {
 		resolveCredentials: (config) => resolveCredentials(config.credentials, process.env),
 		ledger: createLedgerPort(ledgerStore, { onWarning: (warning) => { ledgerWarning = warning; } }),
 		health: createHealthPort(healthStore, { onWarning: (warning) => { healthWarning = warning; } }),
+		onThresholdCrossings: (crossings) => {
+			thresholdWarnings.push(...thresholdWarner.warningsFor(crossings));
+		},
 	};
 
 	function refreshConfig(): void {
@@ -158,6 +164,16 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const { state, warning } = loadLedger(ledgerStore, now);
+		const attemptsByAlias: Record<string, number[]> = {};
+		for (const event of state.events) {
+			if (event.kind === "attempt") (attemptsByAlias[event.alias] ??= []).push(event.at);
+		}
+		const thresholds = describeThresholds(resolved, attemptsByAlias, now);
+		if (thresholds.length > 0) {
+			lines.push("Thresholds:");
+			for (const threshold of thresholds) lines.push(`- ${threshold}`);
+		}
+
 		const session = summarizeEvents(state.events, { sessionId: ctx.sessionManager.getSessionId() });
 		lines.push(
 			`This session: ${session.requests} Search Requests, ${session.attempts} Provider Attempts ` +
@@ -326,6 +342,10 @@ export default function (pi: ExtensionAPI) {
 			);
 
 			const successful = results.filter((result) => !("error" in result)).length;
+			if (thresholdWarnings.length > 0) {
+				ctx.ui.notify(thresholdWarnings.join("\n"), "warning");
+				thresholdWarnings = [];
+			}
 			return {
 				content: [{ type: "text", text: formatSearchBatch(results) }],
 				details: {
