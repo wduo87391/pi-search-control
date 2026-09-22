@@ -28,6 +28,14 @@ _Avoid_: Custom prompt, system prompt, override
 A provider-specific kind of result or behavior that should remain distinguishable even when providers share a common search entry point.
 _Avoid_: Special feature
 
+**Result normalization**:
+The step that wraps a provider response into the common core (title, URL, snippet, provider identity) plus a provider-specific extension, without copying the raw provider payload wholesale.
+_Avoid_: Result mapping, reshaping
+
+**Provider extension**:
+The provider-specific data a normalized search result carries alongside the common core, namespaced by provider name and delivered in structured details; it is never rendered into model-visible text.
+_Avoid_: Extra fields, metadata
+
 **Credential pool**:
 The user's legitimately controlled credentials available to a search provider for normal rotation and failure recovery.
 _Avoid_: Free-account farm, shared key list

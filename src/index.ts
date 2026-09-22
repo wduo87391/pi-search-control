@@ -404,12 +404,13 @@ export default function (pi: ExtensionAPI) {
 					profileName: profile.name,
 					providers: profile.providers,
 					results: results.map((result) => "error" in result
-						? { query: result.query, error: result.error }
+						? { query: result.query, error: result.error, failedAttempts: result.attempts }
 						: {
 							query: result.query,
 							provider: result.provider,
 							alias: result.alias,
 							answer: result.answer,
+							extension: result.extension,
 							sources: result.results,
 							failedAttempts: result.attempts,
 						}),

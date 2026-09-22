@@ -9,6 +9,7 @@ interface TavilyResponse {
 		title?: string;
 		url?: string;
 		content?: string;
+		score?: number;
 	}>;
 }
 
@@ -40,6 +41,9 @@ export async function searchTavily(query: string, apiKey: string, options: Searc
 			title: item.title,
 			url: item.url,
 			snippet: cleanText(item.content),
+			// Tavily's relevance score is provider-specific; the common core has no
+			// equivalent, so preserve it in the extension.
+			...(typeof item.score === "number" ? { extension: { score: item.score } } : {}),
 		});
 		if (results.length >= numResults) break;
 	}

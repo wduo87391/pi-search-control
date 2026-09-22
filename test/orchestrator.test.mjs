@@ -180,7 +180,79 @@ test('a partially failing batch still returns the successful queries', async () 
   assert.equal(outcomes[0].query, 'good');
   assert.ok('error' in outcomes[1]);
   assert.equal(outcomes[1].query, 'bad');
-  assert.match(outcomes[1].error, /exa exa-main \[service\]/);
+  // Failed attempts live in structured details, not in the model-visible text.
+  assert.deepEqual(outcomes[1].attempts, [
+    { provider: 'exa', alias: 'exa-main', error: '502 bad gateway', errorCategory: 'service' },
+    { provider: 'tavily', alias: 'tvly-work', error: '502 bad gateway', errorCategory: 'service' },
+    { provider: 'tavily', alias: 'tvly-personal', error: '502 bad gateway', errorCategory: 'service' },
+    { provider: 'brave', alias: 'brave-main', error: '502 bad gateway', errorCategory: 'service' }
+  ]);
+  assert.ok(!outcomes[1].error.includes('exa-main'), 'error text must not name the attempted aliases');
+  assert.ok(!outcomes[1].error.includes('service'), 'error text must not carry per-attempt categories');
+});
+
+test('a failed query exposes its attempts in structured details and a concise text error', async () => {
+  const { deps } = makeDeps({
+    search: async () => { throw new Error('401 unauthorized'); }
+  });
+
+  const outcomes = await orchestrateBatch(
+    { queries: ['only'], config, profile: research, sessionId: 's1' },
+    deps
+  );
+
+  assert.equal(outcomes.length, 1);
+  assert.ok('error' in outcomes[0]);
+  assert.equal(outcomes[0].error, 'Search failed for all configured targets.');
+  assert.deepEqual(outcomes[0].attempts.map((attempt) => [attempt.provider, attempt.alias, attempt.errorCategory]), [
+    ['exa', 'exa-main', 'auth'],
+    ['tavily', 'tvly-work', 'auth'],
+    ['tavily', 'tvly-personal', 'auth'],
+    ['brave', 'brave-main', 'auth']
+  ]);
+});
+
+test('provider extension data flows through orchestration results', async () => {
+  const { deps } = makeDeps({
+    search: async () => ({
+      answer: '',
+      results: [{ title: 't', url: 'https://example.com', snippet: 's', extension: { highlights: ['h1'] } }]
+    })
+  });
+
+  const result = await orchestrateSearch(input({ profile: { name: 'exa', providers: ['exa'] } }), deps);
+
+  assert.equal(result.results[0].provider, 'exa');
+  assert.deepEqual(result.results[0].extension, { exa: { highlights: ['h1'] } });
+  assert.ok(!result.markdown.includes('h1'), 'the extension value is not rendered into model-visible markdown');
+});
+
+test('a throwing ledger store never fails the search', async () => {
+  const { deps } = makeDeps({
+    ledger: {
+      attemptsByAlias: () => { throw new Error('ledger read exploded'); },
+      record: () => { throw new Error('ledger write exploded'); }
+    }
+  });
+
+  const result = await orchestrateSearch(input(), deps);
+
+  assert.equal(result.provider, 'exa');
+  assert.equal(result.alias, 'exa-main');
+  assert.ok(!result.markdown.includes('ledger'), 'a ledger failure is not surfaced to the model');
+});
+
+test('a ledger port that returns a corrupt shape degrades to no attempt history', async () => {
+  const { deps } = makeDeps({
+    ledger: {
+      attemptsByAlias: () => undefined,
+      record: () => { throw new Error('ledger write exploded'); }
+    }
+  });
+
+  const result = await orchestrateSearch(input(), deps);
+
+  assert.equal(result.alias, 'exa-main');
 });
 
 test('total failure lists every attempted provider and alias with its category and no key material', async () => {

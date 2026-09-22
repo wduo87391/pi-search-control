@@ -17,6 +17,7 @@ import {
 	type LedgerStore,
 } from "./ledger.ts";
 import type { PenaltyState } from "./selection.ts";
+import { normalizeResponse } from "./normalize.ts";
 import {
 	mergePenalties,
 	thresholdCrossings,
@@ -172,7 +173,7 @@ export interface OrchestratorQuery {
 /** A routed query's outcome; failures carry their message, successes their markdown. */
 export type SearchOutcome =
 	| (RoutedSearchResult & { attempts: FailedAttempt[] })
-	| { query: string; error: string };
+	| { query: string; error: string; attempts: FailedAttempt[] };
 
 export interface SearchBatchInput {
 	queries: string[];
@@ -272,7 +273,14 @@ export async function orchestrateSearch(
 	const { config, profile, sessionId, options = {} } = query;
 	const at = deps.now();
 	const credentials = deps.resolveCredentials(config);
-	const attemptsByAlias = deps.ledger.attemptsByAlias(at);
+	// The usage ledger is diagnostics: a read failure must never fail a search,
+	// so a throwing or corrupt port degrades to "no attempt history".
+	let attemptsByAlias: Record<string, number[]> = {};
+	try {
+		attemptsByAlias = deps.ledger.attemptsByAlias(at) ?? {};
+	} catch {
+		// Swallowed on purpose; the edge port reports warnings.
+	}
 	const crossings = thresholdCrossings(credentials, attemptsByAlias, at);
 	deps.onThresholdCrossings?.(crossings);
 	const plan = buildSearchPlan(profile, credentials, {
@@ -306,6 +314,7 @@ export async function orchestrateSearch(
 	for (const target of plan) {
 		try {
 			const response = await deps.search(target, query.query, searchOptions);
+			const normalized = normalizeResponse(target.provider, response);
 			recordAccounting(
 				deps,
 				buildAccountingEvents(config, sessionId, requestId, profile.name, at, attempts, {
@@ -318,9 +327,10 @@ export async function orchestrateSearch(
 				query: query.query,
 				provider: target.provider,
 				alias: target.alias,
-				answer: response.answer,
-				results: response.results,
-				markdown: formatSearchMarkdown(query.query, target.provider, target.alias, response),
+				answer: normalized.answer,
+				results: normalized.results,
+				extension: normalized.extension,
+				markdown: formatSearchMarkdown(query.query, target.provider, target.alias, normalized),
 				attempts,
 			};
 		} catch (err) {
@@ -374,7 +384,13 @@ export async function orchestrateBatch(
 		} catch (err) {
 			if (isAbortError(err)) throw err;
 			if (err instanceof SearchFailureError) {
-				outcomes.push({ query, error: err.message });
+				// The failed Provider Attempts travel in structured details; the
+				// model-visible text stays concise and never names aliases or categories.
+				outcomes.push({
+					query,
+					error: "Search failed for all configured targets.",
+					attempts: err.attempts,
+				});
 				continue;
 			}
 			throw err;

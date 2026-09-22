@@ -1,5 +1,6 @@
 import { type Provider, type SearchProfile } from "./config.ts";
 import { type ResolvedCredential } from "./credentials.ts";
+import type { NormalizedResult } from "./normalize.ts";
 import { rankCredentials, type PenaltyState } from "./selection.ts";
 import { type ErrorCategory } from "./ledger.ts";
 import { type SearchOptions, type SearchResponse } from "./utils.ts";
@@ -18,7 +19,9 @@ export interface RoutedSearchResult {
 	provider: Provider;
 	alias: string;
 	answer: string;
-	results: SearchResponse["results"];
+	results: NormalizedResult[];
+	/** Response-level provider-specific data, namespaced by provider name. */
+	extension?: Record<string, unknown>;
 	markdown: string;
 }
 

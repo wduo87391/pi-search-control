@@ -39,11 +39,15 @@ function mapResults(results: ExaSearchResponse["results"], numResults: number): 
 		const item = results[i];
 		if (!item?.url) continue;
 		const highlights = normalizeHighlights(item.highlights);
-		mapped.push({
+		const mappedResult: SearchResult = {
 			title: item.title || `Source ${i + 1}`,
 			url: item.url,
 			snippet: highlights.length > 0 ? cleanText(highlights.join(" ")) : cleanText(item.text),
-		});
+		};
+		// Exa's highlights are its distinctive capability; keep the raw list even
+		// though the snippet already folds them together.
+		if (highlights.length > 0) mappedResult.extension = { highlights };
+		mapped.push(mappedResult);
 		if (mapped.length >= numResults) break;
 	}
 	return mapped;

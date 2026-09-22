@@ -57,11 +57,18 @@ export async function searchBrave(query: string, apiKey: string, options: Search
 		if (snippets.length === 0) continue;
 
 		const source = data.sources?.[item.url];
-		results.push({
+		const result: SearchResult = {
 			title: item.title || source?.title || source?.hostname || item.url,
 			url: item.url,
 			snippet: snippets.join("\n\n"),
-		});
+		};
+		// Brave uniquely offers the per-source age/hostname and the raw snippet
+		// list; preserve them so its context capability is not flattened away.
+		const extension: Record<string, unknown> = { snippets };
+		if (source?.age !== undefined) extension.age = source.age;
+		if (source?.hostname) extension.hostname = source.hostname;
+		result.extension = extension;
+		results.push(result);
 		seen.add(item.url);
 		if (results.length >= numResults) break;
 	}

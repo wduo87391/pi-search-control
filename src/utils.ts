@@ -2,11 +2,19 @@ export interface SearchResult {
 	title: string;
 	url: string;
 	snippet: string;
+	/**
+	 * Provider-specific fields the common core cannot represent. Adapters attach
+	 * only what they uniquely offer; `normalizeResponse` namespaces them by
+	 * provider before they reach structured details. Never rendered as text.
+	 */
+	extension?: Record<string, unknown>;
 }
 
 export interface SearchResponse {
 	answer: string;
 	results: SearchResult[];
+	/** Response-level provider-specific fields; namespaced by `normalizeResponse`. */
+	extension?: Record<string, unknown>;
 }
 
 export interface SearchOptions {
@@ -39,7 +47,17 @@ export function isAbortError(err: unknown): boolean {
 	return message.toLowerCase().includes("abort");
 }
 
-export function formatSearchMarkdown(query: string, provider: string, id: string, response: SearchResponse): string {
+export interface MarkdownSource {
+	answer: string;
+	results: ReadonlyArray<{ title: string; url: string; snippet: string }>;
+}
+
+/**
+ * Render the model-visible markdown from the common core only. It deliberately
+ * accepts the minimal shape rather than a full provider response, so extension
+ * data can never leak into the text.
+ */
+export function formatSearchMarkdown(query: string, provider: string, id: string, response: MarkdownSource): string {
 	let output = `## Search results for: "${query}"\n\n`;
 	output += `Provider: ${provider}\n`;
 	output += `Credential: ${id}\n\n`;
