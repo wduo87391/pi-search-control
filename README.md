@@ -28,7 +28,7 @@ flowchart LR
     HTTP --> Agent
 ```
 
-`balanced` mode shuffles every provider/key pair in one pool. `auto` preserves provider priority while rotating keys inside each provider. Failed targets fall through to the next target in the generated plan.
+A Search Profile names an ordered list of providers. The `web_search` tool follows the active profile's provider order; failed targets fall through to the next target in the generated plan.
 
 ## Configuration
 
@@ -36,8 +36,11 @@ flowchart LR
 
 ```json
 {
-  "provider": "balanced",
-  "providers": ["exa", "tavily", "brave"],
+  "defaultProfile": "research",
+  "profiles": {
+    "research": { "providers": ["exa", "tavily", "brave"] },
+    "economy": { "providers": ["brave", "tavily"] }
+  },
   "apiKeys": {
     "exa": ["exa-key-1"],
     "tavily": ["tavily-key-1", "tavily-key-2"],
@@ -54,34 +57,31 @@ flowchart LR
 }
 ```
 
+`defaultProfile` is required and must name a key in `profiles`. Every profile must declare a non-empty `providers` array of `exa`, `tavily`, or `brave`.
+
 Legacy fields are intentionally rejected:
 
+- `provider`, `providers`
 - `exaApiKey`, `exaApiKeys`
 - `tavilyApiKey`, `tavilyApiKeys`
 - `braveApiKey`, `braveApiKeys`
 - `loadBalancing`, `workflow`, `geminiApiKey`, `perplexityApiKey`
 
-## Provider modes
+## Search Profiles
 
-### `balanced`
-
-Flattens every provider+key pair into one pool and shuffles it per search.
-
-Example:
+A Search Profile is a named, session-scoped policy. Its `providers` array is the order in which providers are tried:
 
 ```json
 {
-  "provider": "balanced",
-  "providers": ["exa", "tavily", "brave"],
-  "apiKeys": {
-    "exa": ["exa1"],
-    "tavily": ["tvly1", "tvly2"],
-    "brave": ["brave1", "brave2"]
+  "defaultProfile": "research",
+  "profiles": {
+    "research": { "providers": ["exa", "tavily", "brave"] },
+    "economy": { "providers": ["brave", "tavily"] }
   }
 }
 ```
 
-Targets:
+The `research` profile builds this target order (one target per key, in declared key order):
 
 ```text
 exa:exa1
@@ -91,28 +91,7 @@ brave:brave1
 brave:brave2
 ```
 
-Each target has equal probability.
-
-### `auto`
-
-Uses `providers` as the priority order. Keys within the same provider are shuffled.
-
-```json
-{
-  "provider": "auto",
-  "providers": ["tavily", "exa", "brave"]
-}
-```
-
-This tries all Tavily keys first, then Exa keys, then Brave keys.
-
-### Direct provider
-
-```json
-{ "provider": "brave" }
-```
-
-Only Brave keys are used. No fallback to other providers.
+New sessions start with `defaultProfile`. Use `/search-profile <name>` to switch the profile for the current session; with no argument in TUI mode it opens a selector. Resuming or navigating a session branch restores the profile selected on that branch.
 
 ## Tools
 

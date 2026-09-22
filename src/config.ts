@@ -6,7 +6,6 @@ export const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
 export const PROVIDERS = ["exa", "tavily", "brave"] as const;
 export type Provider = typeof PROVIDERS[number];
-export type ProviderMode = Provider | "auto" | "balanced";
 
 export interface SearchDefaults {
 	numResults: number;
@@ -18,19 +17,25 @@ export interface FetchDefaults {
 	maxChars: number;
 }
 
-export interface SearchControlConfig {
-	provider: ProviderMode;
+export interface SearchProfile {
+	name: string;
 	providers: Provider[];
+}
+
+export interface SearchControlConfig {
+	defaultProfile: string;
+	profiles: Record<string, SearchProfile>;
 	apiKeys: Record<Provider, string[]>;
 	search: SearchDefaults;
 	fetch: FetchDefaults;
 }
 
-const DEFAULT_PROVIDERS: Provider[] = ["exa", "tavily", "brave"];
 const DEFAULT_SEARCH: SearchDefaults = { numResults: 5, timeoutMs: 20_000 };
 const DEFAULT_FETCH: FetchDefaults = { timeoutMs: 20_000, maxChars: 30_000 };
 
 const LEGACY_FIELDS = [
+	"provider",
+	"providers",
 	"exaApiKey",
 	"exaApiKeys",
 	"tavilyApiKey",
@@ -43,33 +48,16 @@ const LEGACY_FIELDS = [
 	"perplexityApiKey",
 ];
 
+const NEW_FORMAT_HINT =
+	'{ "defaultProfile": "<name>", "profiles": { "<name>": { "providers": ["exa", "tavily", "brave"] } }, ' +
+	'"apiKeys": { "exa": [], "tavily": [], "brave": [] } }';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function isProvider(value: unknown): value is Provider {
 	return typeof value === "string" && (PROVIDERS as readonly string[]).includes(value);
-}
-
-function normalizeProviderMode(value: unknown): ProviderMode {
-	if (value === undefined) return "auto";
-	if (value === "auto" || value === "balanced" || isProvider(value)) return value;
-	throw new Error(`Invalid provider in ${CONFIG_PATH}: expected auto, balanced, exa, tavily, or brave.`);
-}
-
-function normalizeProviderList(value: unknown): Provider[] {
-	if (value === undefined) return DEFAULT_PROVIDERS;
-	if (!Array.isArray(value)) {
-		throw new Error(`Invalid providers in ${CONFIG_PATH}: expected an array like ["exa", "tavily", "brave"].`);
-	}
-	const providers: Provider[] = [];
-	for (const item of value) {
-		if (!isProvider(item)) {
-			throw new Error(`Invalid provider in providers: ${JSON.stringify(item)}. Expected exa, tavily, or brave.`);
-		}
-		if (!providers.includes(item)) providers.push(item);
-	}
-	return providers.length > 0 ? providers : DEFAULT_PROVIDERS;
 }
 
 function normalizeKeys(value: unknown, provider: Provider): string[] {
@@ -96,12 +84,76 @@ function normalizeNumber(value: unknown, fallback: number, name: string): number
 	return Math.floor(value);
 }
 
+function normalizeProfileProviders(value: unknown, profileName: string, sourcePath: string): Provider[] {
+	if (!Array.isArray(value) || value.length === 0) {
+		throw new Error(
+			`Invalid profiles.${profileName}.providers in ${sourcePath}: ` +
+			"expected a non-empty array of exa, tavily, or brave."
+		);
+	}
+	const providers: Provider[] = [];
+	for (const item of value) {
+		if (!isProvider(item)) {
+			throw new Error(
+				`Invalid provider ${JSON.stringify(item)} in profiles.${profileName}.providers in ${sourcePath}: ` +
+				"expected exa, tavily, or brave."
+			);
+		}
+		if (!providers.includes(item)) providers.push(item);
+	}
+	return providers;
+}
+
+function normalizeProfiles(value: unknown, sourcePath: string): Record<string, SearchProfile> {
+	if (!isRecord(value)) {
+		throw new Error(`Missing profiles in ${sourcePath}. Expected ${NEW_FORMAT_HINT}.`);
+	}
+	const names = Object.keys(value);
+	if (names.length === 0) {
+		throw new Error(`Invalid profiles in ${sourcePath}: expected at least one Search Profile.`);
+	}
+	const profiles: Record<string, SearchProfile> = {};
+	for (const name of names) {
+		const raw = value[name];
+		if (!isRecord(raw)) {
+			throw new Error(
+				`Invalid profiles.${name} in ${sourcePath}: expected an object with a providers array.`
+			);
+		}
+		profiles[name] = {
+			name,
+			providers: normalizeProfileProviders(raw.providers, name, sourcePath),
+		};
+	}
+	return profiles;
+}
+
+function normalizeDefaultProfile(
+	value: unknown,
+	profiles: Record<string, SearchProfile>,
+	sourcePath: string,
+): string {
+	if (value === undefined) {
+		throw new Error(
+			`Missing defaultProfile in ${sourcePath}: expected the name of a Search Profile declared in profiles.`
+		);
+	}
+	if (typeof value !== "string" || value.trim() === "") {
+		throw new Error(`Invalid defaultProfile in ${sourcePath}: expected a non-empty string.`);
+	}
+	const name = value.trim();
+	if (!(name in profiles)) {
+		throw new Error(`Unknown defaultProfile "${name}" in ${sourcePath}: not declared in profiles.`);
+	}
+	return name;
+}
+
 function assertNoLegacyFields(raw: Record<string, unknown>, sourcePath: string): void {
 	const found = LEGACY_FIELDS.filter((field) => field in raw);
 	if (found.length > 0) {
 		throw new Error(
 			`${sourcePath} uses legacy fields (${found.join(", ")}). ` +
-			"pi-search-control only supports the new format: { provider, providers, apiKeys: { exa: [], tavily: [], brave: [] } }."
+			`pi-search-control only supports the new format: ${NEW_FORMAT_HINT}.`
 		);
 	}
 }
@@ -115,15 +167,18 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): SearchContr
 
 	const apiKeysRaw = raw.apiKeys;
 	if (!isRecord(apiKeysRaw)) {
-		throw new Error(`Missing apiKeys in ${sourcePath}. Expected { "apiKeys": { "exa": [], "tavily": [], "brave": [] } }.`);
+		throw new Error(
+			`Missing apiKeys in ${sourcePath}. Expected { "apiKeys": { "exa": [], "tavily": [], "brave": [] } }.`
+		);
 	}
 
+	const profiles = normalizeProfiles(raw.profiles, sourcePath);
 	const searchRaw = isRecord(raw.search) ? raw.search : {};
 	const fetchRaw = isRecord(raw.fetch) ? raw.fetch : {};
 
 	return {
-		provider: normalizeProviderMode(raw.provider),
-		providers: normalizeProviderList(raw.providers),
+		defaultProfile: normalizeDefaultProfile(raw.defaultProfile, profiles, sourcePath),
+		profiles,
 		apiKeys: {
 			exa: normalizeKeys(apiKeysRaw.exa, "exa"),
 			tavily: normalizeKeys(apiKeysRaw.tavily, "tavily"),

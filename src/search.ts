@@ -1,5 +1,5 @@
-import type { Provider, ProviderMode, SearchControlConfig } from "./config.ts";
-import { formatSearchMarkdown, isAbortError, keyId, shuffle, type SearchOptions, type SearchResponse } from "./utils.ts";
+import { CONFIG_PATH, type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { formatSearchMarkdown, isAbortError, keyId, type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
 import { searchExa } from "./providers/exa.ts";
 import { searchTavily } from "./providers/tavily.ts";
@@ -33,16 +33,8 @@ function providerTargets(config: SearchControlConfig, provider: Provider): Searc
 	}));
 }
 
-export function buildSearchPlan(config: SearchControlConfig, mode: ProviderMode = config.provider): SearchTarget[] {
-	if (mode === "balanced") {
-		return shuffle(config.providers.flatMap((provider) => providerTargets(config, provider)));
-	}
-
-	if (mode === "auto") {
-		return config.providers.flatMap((provider) => shuffle(providerTargets(config, provider)));
-	}
-
-	return shuffle(providerTargets(config, mode));
+export function buildSearchPlan(config: SearchControlConfig, profile: SearchProfile): SearchTarget[] {
+	return profile.providers.flatMap((provider) => providerTargets(config, provider));
 }
 
 async function searchWithTarget(target: SearchTarget, query: string, options: SearchOptions): Promise<SearchResponse> {
@@ -58,13 +50,14 @@ function errorMessage(err: unknown): string {
 export async function searchOne(
 	query: string,
 	config: SearchControlConfig,
+	profile: SearchProfile,
 	options: Partial<SearchOptions> = {},
 ): Promise<RoutedSearchResult & { attempts: FailedAttempt[] }> {
-	const plan = buildSearchPlan(config);
+	const plan = buildSearchPlan(config, profile);
 	if (plan.length === 0) {
 		throw new Error(
-			`No API keys available for provider mode "${config.provider}". ` +
-			`Check ${config.providers.map((p) => `apiKeys.${p}`).join(", ")} in ~/.pi/web-search.json.`
+			`No API keys available for Search Profile "${profile.name}". ` +
+			`Check ${profile.providers.map((p) => `apiKeys.${p}`).join(", ")} in ${CONFIG_PATH}.`
 		);
 	}
 

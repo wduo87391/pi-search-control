@@ -21,15 +21,6 @@ export function keyId(provider: string, apiKey: string): string {
 	return `${provider}#${createHash("sha256").update(apiKey).digest("hex").slice(0, 8)}`;
 }
 
-export function shuffle<T>(items: readonly T[]): T[] {
-	const out = items.slice();
-	for (let i = out.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
-		[out[i], out[j]] = [out[j], out[i]];
-	}
-	return out;
-}
-
 export function requestSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
 	const timeout = AbortSignal.timeout(timeoutMs);
 	return signal ? AbortSignal.any([signal, timeout]) : timeout;

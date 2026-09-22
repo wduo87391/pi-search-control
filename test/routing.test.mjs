@@ -3,31 +3,41 @@ import assert from 'node:assert/strict';
 import { parseConfig } from '../src/config.ts';
 import { buildSearchPlan } from '../src/search.ts';
 
-const config = parseConfig({
-  provider: 'balanced',
-  providers: ['exa', 'tavily', 'brave'],
+const raw = {
+  defaultProfile: 'research',
+  profiles: {
+    research: { providers: ['exa', 'tavily', 'brave'] },
+    economy: { providers: ['brave', 'tavily'] }
+  },
   apiKeys: {
     exa: ['exa1'],
     tavily: ['tvly1', 'tvly2'],
     brave: ['brave1', 'brave2']
   }
-}, 'test.json');
+};
 
-test('balanced builds one flat target per provider key', () => {
-  const plan = buildSearchPlan(config, 'balanced');
-  const counts = Object.fromEntries(['exa', 'tavily', 'brave'].map((p) => [p, 0]));
-  for (const target of plan) counts[target.provider]++;
+const config = parseConfig(raw, 'test.json');
+
+test('a Search Profile builds one target per key in provider order', () => {
+  const plan = buildSearchPlan(config, config.profiles.research);
+  assert.deepEqual(plan.map((target) => target.provider), ['exa', 'tavily', 'tavily', 'brave', 'brave']);
   assert.equal(plan.length, 5);
-  assert.deepEqual(counts, { exa: 1, tavily: 2, brave: 2 });
 });
 
-test('auto preserves provider priority while shuffling keys within each provider', () => {
-  const plan = buildSearchPlan({ ...config, provider: 'auto', providers: ['tavily', 'exa', 'brave'] }, 'auto');
-  assert.deepEqual(plan.map((target) => target.provider), ['tavily', 'tavily', 'exa', 'brave', 'brave']);
+test('keys within a provider keep their declared order', () => {
+  const plan = buildSearchPlan(config, config.profiles.research);
+  assert.deepEqual(
+    plan.filter((target) => target.provider === 'tavily').map((target) => target.apiKey),
+    ['tvly1', 'tvly2']
+  );
 });
 
-test('direct provider only uses that provider keys', () => {
-  const plan = buildSearchPlan(config, 'brave');
-  assert.equal(plan.length, 2);
-  assert.ok(plan.every((target) => target.provider === 'brave'));
+test('a Search Profile uses only its declared providers', () => {
+  const plan = buildSearchPlan(config, config.profiles.economy);
+  assert.deepEqual(plan.map((target) => target.provider), ['brave', 'brave', 'tavily', 'tavily']);
+});
+
+test('a profile with no keys for its providers yields an empty plan', () => {
+  const empty = parseConfig({ ...raw, apiKeys: { exa: [], tavily: [], brave: [] } }, 'test.json');
+  assert.deepEqual(buildSearchPlan(empty, empty.profiles.research), []);
 });

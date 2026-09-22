@@ -1,7 +1,7 @@
 {
   "name": "pi-search-control",
   "version": "0.1.5",
-  "description": "Lightweight web_search and fetch tools for Pi with Exa, Tavily, Brave, auto priority, and balanced provider-key pools.",
+  "description": "Lightweight web_search and fetch tools for Pi with named Search Profiles routing Exa, Tavily, and Brave.",
   "type": "module",
   "scripts": {
     "check": "node --input-type=module -e \"await import('./src/config.ts'); await import('./src/search.ts'); await import('./src/fetch.ts'); await import('./src/index.ts')\"",

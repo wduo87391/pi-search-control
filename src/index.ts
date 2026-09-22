@@ -1,7 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { loadConfig } from "./config.ts";
+import { loadConfig, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { fetchOne } from "./fetch.ts";
 import { searchOne, type FailedAttempt, type RoutedSearchResult } from "./search.ts";
 
@@ -30,10 +30,134 @@ function compactList(items: string[], max = 4): string {
 	return `${items.slice(0, max).join(", ")} +${items.length - max} more`;
 }
 
+const PROFILE_ENTRY = "search-profile";
+const STATUS_KEY = "search-profile";
+
 export default function (pi: ExtensionAPI) {
+	let currentConfig: SearchControlConfig | undefined;
+	let configError: string | undefined;
+	let activeProfileName: string | undefined;
+	let profileWarning: string | undefined;
+
+	function refreshConfig(): void {
+		try {
+			currentConfig = loadConfig();
+			configError = undefined;
+		} catch (err) {
+			currentConfig = undefined;
+			configError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function restoreProfile(ctx: ExtensionContext): void {
+		activeProfileName = undefined;
+		profileWarning = undefined;
+		if (!currentConfig) return;
+
+		let saved: string | undefined;
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === PROFILE_ENTRY) {
+				const data = entry.data as { profile?: unknown } | undefined;
+				if (data && typeof data.profile === "string") saved = data.profile;
+			}
+		}
+
+		if (saved) {
+			if (currentConfig.profiles[saved]) {
+				activeProfileName = saved;
+			} else {
+				activeProfileName = currentConfig.defaultProfile;
+				profileWarning = `profile "${saved}" no longer exists`;
+			}
+		} else {
+			activeProfileName = currentConfig.defaultProfile;
+		}
+	}
+
+	function updateStatus(ctx: ExtensionContext): void {
+		if (!currentConfig) {
+			ctx.ui.setStatus(STATUS_KEY, "search: config unavailable");
+			return;
+		}
+		const name = activeProfileName ?? currentConfig.defaultProfile;
+		const profile = currentConfig.profiles[name];
+		const order = profile ? profile.providers.join(">") : "unknown";
+		let text = `search: ${name} (${order})`;
+		if (profileWarning) text += ` | warn: ${profileWarning}`;
+		ctx.ui.setStatus(STATUS_KEY, text);
+	}
+
+	function resolveProfile(): SearchProfile {
+		if (!currentConfig) {
+			throw new Error(`Search configuration unavailable: ${configError ?? "unknown error"}`);
+		}
+		const name = activeProfileName ?? currentConfig.defaultProfile;
+		const profile = currentConfig.profiles[name];
+		if (!profile) {
+			throw new Error(`Search Profile "${name}" is not declared in profiles.`);
+		}
+		return profile;
+	}
+
+	function selectProfile(name: string, ctx: ExtensionContext): void {
+		if (!currentConfig || !currentConfig.profiles[name]) {
+			const available = currentConfig ? Object.keys(currentConfig.profiles).join(", ") : "none";
+			ctx.ui.notify(`Unknown Search Profile "${name}". Available: ${available}`, "error");
+			return;
+		}
+		activeProfileName = name;
+		profileWarning = undefined;
+		pi.appendEntry(PROFILE_ENTRY, { profile: name });
+		updateStatus(ctx);
+		ctx.ui.notify(`Search Profile: ${name} (${currentConfig.profiles[name].providers.join(">")})`, "info");
+	}
+
+	pi.registerCommand("search-profile", {
+		description: "Select the Search Profile for this session",
+		getArgumentCompletions: (prefix) => {
+			if (!currentConfig) return null;
+			const names = Object.keys(currentConfig.profiles).filter((name) => name.startsWith(prefix));
+			return names.length > 0 ? names.map((value) => ({ value, label: value })) : null;
+		},
+		handler: async (args, ctx) => {
+			if (!currentConfig) refreshConfig();
+			if (!currentConfig) {
+				ctx.ui.notify(`Search configuration unavailable: ${configError ?? "unknown error"}`, "error");
+				return;
+			}
+
+			const requested = args.trim();
+			if (requested) {
+				selectProfile(requested, ctx);
+				return;
+			}
+
+			if (ctx.mode !== "tui") {
+				const name = activeProfileName ?? currentConfig.defaultProfile;
+				ctx.ui.notify(`Active Search Profile: ${name}. Use /search-profile <name> to switch.`, "info");
+				return;
+			}
+
+			const names = Object.keys(currentConfig.profiles);
+			const selected = await ctx.ui.select("Search Profile", names);
+			if (selected) selectProfile(selected, ctx);
+		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		refreshConfig();
+		restoreProfile(ctx);
+		updateStatus(ctx);
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		restoreProfile(ctx);
+		updateStatus(ctx);
+	});
+
 	pi.registerTool({
 		name: "web_search",
-		label: "Web Search Lite",
+		label: "Web Search",
 		description: "Search the web and return concise results with source links. Use multiple varied queries for broader research coverage.",
 		promptSnippet: "Search the web. Prefer queries with 2-4 distinct angles for research tasks.",
 		parameters: Type.Object({
@@ -49,7 +173,7 @@ export default function (pi: ExtensionAPI) {
 			const details = result.details as {
 				queryCount?: number;
 				successful?: number;
-				providerMode?: string;
+				profileName?: string;
 				results?: Array<{ keyId?: string; sources?: unknown[]; error?: string }>;
 			};
 			if (isPartial) return new Text(theme.fg("accent", "searching..."), 0, 0);
@@ -57,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 			const keys = [...new Set((details?.results ?? []).map((item) => item.keyId).filter((value): value is string => typeof value === "string"))];
 			const errors = (details?.results ?? []).filter((item) => item.error).length;
 			let line = theme.fg("success", `${details?.successful ?? 0}/${details?.queryCount ?? 0} queries, ${totalSources} sources`);
-			line += theme.fg("muted", ` | ${details?.providerMode ?? "auto"}`);
+			line += theme.fg("muted", ` | ${details?.profileName ?? "none"}`);
 			if (keys.length > 0) line += theme.fg("muted", ` | ${compactList(keys)}`);
 			if (errors > 0) line += theme.fg("warning", ` | ${errors} errors`);
 			return new Text(line, 0, 0);
@@ -68,7 +192,12 @@ export default function (pi: ExtensionAPI) {
 				throw new Error("No query provided. Use query or queries.");
 			}
 
-			const config = loadConfig();
+			if (!currentConfig) refreshConfig();
+			const config = currentConfig;
+			if (!config) {
+				throw new Error(`Search configuration unavailable: ${configError ?? "unknown error"}`);
+			}
+			const profile = resolveProfile();
 			const results: Array<(RoutedSearchResult & { attempts: FailedAttempt[] }) | { query: string; error: string }> = [];
 			const numResults = config.search.numResults;
 
@@ -79,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 					details: { phase: "search", current: i + 1, total: queries.length, query },
 				});
 				try {
-					results.push(await searchOne(query, config, { numResults, signal }));
+					results.push(await searchOne(query, config, profile, { numResults, signal }));
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					results.push({ query, error: message });
@@ -93,8 +222,8 @@ export default function (pi: ExtensionAPI) {
 					queries,
 					queryCount: queries.length,
 					successful,
-					providerMode: config.provider,
-					providers: config.providers,
+					profileName: profile.name,
+					providers: profile.providers,
 					results: results.map((result) => "error" in result
 						? { query: result.query, error: result.error }
 						: {
@@ -146,7 +275,11 @@ export default function (pi: ExtensionAPI) {
 				throw new Error("No URL provided. Use url or urls.");
 			}
 
-			const config = loadConfig();
+			if (!currentConfig) refreshConfig();
+			const config = currentConfig;
+			if (!config) {
+				throw new Error(`Search configuration unavailable: ${configError ?? "unknown error"}`);
+			}
 			const fetched = [];
 			for (let i = 0; i < urls.length; i++) {
 				const url = urls[i];
