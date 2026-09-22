@@ -41,6 +41,16 @@ test('a credential below its threshold is neither demoted nor reported', () => {
   assert.deepEqual(thresholdPenalties(resolved, attempts, NOW), {});
 });
 
+test('an unavailable credential never produces a threshold crossing', () => {
+  const withMissingEnv = resolveCredentials(config.credentials, {
+    EXA_OPEN: 'exa-open-secret',
+    TVLY_CAP: 'tvly-secret'
+  });
+  const attempts = { 'exa-threshold': [NOW, NOW, NOW, NOW] };
+
+  assert.deepEqual(thresholdCrossings(withMissingEnv, attempts, NOW), []);
+});
+
 test('reaching the threshold demotes the credential without excluding it', () => {
   const attempts = { 'exa-threshold': [NOW, NOW, NOW] };
   const crossings = thresholdCrossings(resolved, attempts, NOW);

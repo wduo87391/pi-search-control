@@ -176,7 +176,7 @@ Show at least:
 
 ### `/search-reload`
 
-Validate and atomically activate the user-global JSONC configuration while preserving the previous valid configuration on failure.
+Validate and atomically activate the user-global JSON configuration while preserving the previous valid configuration on failure.
 
 ### Status line
 
@@ -198,7 +198,7 @@ The Pi status area SHOULD show the active profile and a compact warning indicato
 
 V1 is product-complete when a user can:
 
-1. declare environment-backed Exa, Tavily, and Brave credentials and named profiles in global JSONC;
+1. declare environment-backed Exa, Tavily, and Brave credentials and named profiles in global JSON;
 2. select a profile for a Pi session and see it in the status area;
 3. search through one `web_search` tool without model-level provider override;
 4. observe ordered technical-failure fallback and least-used credential selection;

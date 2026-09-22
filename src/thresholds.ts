@@ -39,7 +39,8 @@ function thresholdPeriodKey(period: UsagePeriod, at: number): string {
 /**
  * The credentials that have reached their configured threshold in the active
  * period containing `now`. Pure: attempt times and the clock are injected, and
- * credentials without a threshold are never included.
+ * credentials without a threshold are never included. Unavailable credentials
+ * are skipped too: warning about a credential that cannot be used is noise.
  */
 export function thresholdCrossings(
 	credentials: readonly ResolvedCredential[],
@@ -48,6 +49,7 @@ export function thresholdCrossings(
 ): ThresholdCrossing[] {
 	const crossings: ThresholdCrossing[] = [];
 	for (const credential of credentials) {
+		if (!credential.available) continue;
 		if (credential.threshold === undefined) continue;
 		const attempts = attemptsInPeriod(attemptsByAlias[credential.alias] ?? [], credential.period, now);
 		if (attempts < credential.threshold) continue;

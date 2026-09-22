@@ -162,6 +162,19 @@ test('each query in a batch routes and falls back independently', async () => {
   assert.deepEqual(calls, ['first:exa-main', 'first:tvly-work', 'second:exa-main']);
 });
 
+test('each query in a batch records its own Search Request', async () => {
+  const { deps, recorded } = makeDeps();
+
+  await orchestrateBatch(
+    { queries: ['first', 'second', 'third'], config, profile: research, sessionId: 's1' },
+    deps
+  );
+
+  const requests = recorded.filter((event) => event.kind === 'request');
+  assert.equal(requests.length, 3, 'one Search Request per query in the batch');
+  assert.equal(new Set(requests.map((event) => event.requestId)).size, 3, 'each query gets its own request id');
+});
+
 test('a partially failing batch still returns the successful queries', async () => {
   const { deps } = makeDeps({
     search: async (target, query) => {
@@ -382,6 +395,30 @@ test('a query with no usable credentials records a Search Request with zero atte
   assert.equal(requests.length, 1, 'the rejected query was still submitted');
   assert.equal(requests[0].profile, 'tavily');
   assert.equal(attempts.length, 0);
+});
+
+test('a request timeout falls back and enters a cooldown instead of being treated as an abort', async () => {
+  const store = createMemoryHealthStore();
+  const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const calls = [];
+  const { deps, recorded } = makeDeps({
+    health: createHealthPort(store),
+    search: async (target) => {
+      calls.push(target.alias);
+      if (target.alias === 'exa-main') throw timeout;
+      return okResponse();
+    }
+  });
+
+  const result = await orchestrateSearch(input(), deps);
+
+  assert.equal(result.provider, 'tavily');
+  assert.equal(result.alias, 'tvly-work');
+  assert.deepEqual(calls, ['exa-main', 'tvly-work'], 'a timeout falls back instead of propagating');
+  assert.ok(recorded.length > 0, 'a timed-out attempt is accounted, not discarded as an abort');
+  const cooling = activeCooldowns(store.read().state, NOW);
+  assert.equal(cooling['exa-main'].category, 'timeout');
+  assert.equal(cooling['exa-main'].until, NOW + TRANSIENT_COOLDOWN_MS);
 });
 
 test('a rate-limited credential enters a cooldown with the rate-limit window', async () => {

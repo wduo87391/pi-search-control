@@ -43,8 +43,15 @@ export function truncateText(text: string, maxChars: number): { text: string; tr
 }
 
 export function isAbortError(err: unknown): boolean {
-	const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-	return message.toLowerCase().includes("abort");
+	const name = err instanceof Error ? err.name : "";
+	const message = err instanceof Error ? err.message : String(err);
+	// `AbortSignal.timeout()` rejects with a `TimeoutError` whose message reads
+	// "The operation was aborted due to timeout". A timeout is a technical
+	// failure — the caller must fall back and cool down — so it is never an
+	// abort. Matching on the message alone would misclassify every real timeout.
+	if (name === "TimeoutError") return false;
+	if (name === "AbortError") return true;
+	return /\babort/i.test(`${name}: ${message}`) && !/timeout/i.test(message);
 }
 
 export interface MarkdownSource {
