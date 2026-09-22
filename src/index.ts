@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { loadConfig, PROVIDERS, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { loadConfig, PROVIDERS, readConfigFile, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials } from "./credentials.ts";
 import { estimateAttempt, formatEstimate } from "./estimates.ts";
 import { fetchOne } from "./fetch.ts";
@@ -15,6 +15,7 @@ import {
 	summarizePeriod,
 } from "./ledger.ts";
 import { searchWithTarget } from "./search.ts";
+import { reloadActiveState, type ActiveSearchState } from "./reload.ts";
 import { createThresholdWarner, describeThresholds } from "./thresholds.ts";
 import {
 	createHealthPort,
@@ -273,6 +274,43 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			if (!currentConfig) refreshConfig();
 			ctx.ui.notify(formatSearchStatus(ctx), "info");
+		},
+	});
+
+	pi.registerCommand("search-reload", {
+		description: "Validate and atomically activate the search configuration",
+		handler: async (_args, ctx) => {
+			let raw: unknown;
+			try {
+				raw = readConfigFile();
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				ctx.ui.notify(`Reload failed: ${message}`, "error");
+				return;
+			}
+
+			const current: ActiveSearchState = {
+				config: currentConfig,
+				activeProfileName,
+				activeGuidance,
+				profileWarning,
+			};
+			const { state, error } = reloadActiveState(current, raw);
+			if (error) {
+				// The previously active configuration is untouched; report the field.
+				ctx.ui.notify(`Reload failed: ${error}`, "error");
+				return;
+			}
+
+			// Swap atomically: the whole next state was derived before any assignment.
+			currentConfig = state.config;
+			configError = undefined;
+			activeProfileName = state.activeProfileName;
+			activeGuidance = state.activeGuidance;
+			profileWarning = state.profileWarning;
+			updateStatus(ctx);
+			const name = state.activeProfileName ?? state.config?.defaultProfile ?? "unknown";
+			ctx.ui.notify(`Search configuration reloaded. Active Search Profile: ${name}`, "info");
 		},
 	});
 

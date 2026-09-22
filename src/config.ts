@@ -382,18 +382,19 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): SearchContr
 	};
 }
 
-export function loadConfig(): SearchControlConfig {
+export function readConfigFile(): unknown {
 	if (!existsSync(CONFIG_PATH)) {
 		throw new Error(`Missing config file: ${CONFIG_PATH}`);
 	}
 
-	let raw: unknown;
 	try {
-		raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+		return JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
 	}
+}
 
-	return parseConfig(raw, CONFIG_PATH);
+export function loadConfig(): SearchControlConfig {
+	return parseConfig(readConfigFile(), CONFIG_PATH);
 }

@@ -16,6 +16,10 @@ _Avoid_: Engine, backend, API
 A named, user-selected policy containing provider order, fallback behavior, result preferences, and model guidance for a Pi session.
 _Avoid_: Mode, preset, engine selection
 
+**Configuration reload**:
+The explicit `/search-reload` action that validates a complete candidate configuration before atomically swapping it in as the active configuration; on failure the previously active configuration is preserved untouched and no field of the candidate is applied.
+_Avoid_: Hot reload, auto-reload, config watching
+
 **Guidance supplement**:
 An optional per-profile block of user text appended after the non-replaceable built-in guidance; it may add to but never replace the built-in safety, privacy, and policy rules.
 _Avoid_: Custom prompt, system prompt, override
