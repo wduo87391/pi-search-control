@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { searchBrave } from '../src/providers/brave.ts';
-import { searchDoubao } from '../src/providers/doubao.ts';
 import { searchExa } from '../src/providers/exa.ts';
 import { searchTavily } from '../src/providers/tavily.ts';
 
@@ -27,7 +26,6 @@ test('providers cap requested results to their documented API limits', async (t)
   await searchExa('query', 'key', options);
   await searchTavily('query', 'key', options);
   await searchBrave('query', 'key', options);
-  await searchDoubao('query', 'key', options);
 
   const exaBody = JSON.parse(requests[0].init.body);
   assert.equal(exaBody.numResults, 100);
@@ -38,7 +36,4 @@ test('providers cap requested results to their documented API limits', async (t)
   const braveUrl = new URL(requests[2].input);
   assert.equal(braveUrl.searchParams.get('count'), '50');
   assert.equal(braveUrl.searchParams.get('maximum_number_of_urls'), '50');
-
-  const doubaoBody = JSON.parse(requests[3].init.body);
-  assert.equal(doubaoBody.Count, 50);
 });

@@ -36,7 +36,7 @@ interface GitHubUser {
 function headers(): HeadersInit {
 	const headers: Record<string, string> = {
 		"Accept": "application/vnd.github+json",
-		"User-Agent": "pi-web-lite",
+		"User-Agent": "pi-search-control",
 	};
 	if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
 	return headers;
@@ -146,7 +146,7 @@ async function fetchGitHubBlob(owner: string, repo: string, parts: string[], sou
 	const filePath = parts.slice(1).join("/");
 	if (!ref || !filePath) throw new Error(`Invalid GitHub blob URL: ${sourceUrl}`);
 	const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}`;
-	const { text } = await fetchText(rawUrl, options, { "User-Agent": "pi-web-lite" });
+	const { text } = await fetchText(rawUrl, options, { "User-Agent": "pi-search-control" });
 	return { url: sourceUrl, title: `${owner}/${repo}/${filePath}`, content: text };
 }
 
@@ -170,7 +170,7 @@ async function fetchGitHub(url: URL, options: FetchOptions): Promise<Omit<FetchR
 }
 
 async function fetchGeneric(url: string, options: FetchOptions): Promise<Omit<FetchResult, "truncated" | "originalLength">> {
-	const { text, contentType } = await fetchText(url, options, { "User-Agent": "pi-web-lite" });
+	const { text, contentType } = await fetchText(url, options, { "User-Agent": "pi-search-control" });
 	if (contentType.includes("text/html") || /^\s*</.test(text)) {
 		const converted = htmlToText(text);
 		return { url, title: converted.title, content: converted.text.trim() };

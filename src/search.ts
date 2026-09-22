@@ -1,7 +1,6 @@
-import type { Provider, ProviderMode, WebLiteConfig } from "./config.ts";
+import type { Provider, ProviderMode, SearchControlConfig } from "./config.ts";
 import { formatSearchMarkdown, isAbortError, keyId, shuffle, type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
-import { searchDoubao } from "./providers/doubao.ts";
 import { searchExa } from "./providers/exa.ts";
 import { searchTavily } from "./providers/tavily.ts";
 
@@ -26,7 +25,7 @@ export interface FailedAttempt {
 	error: string;
 }
 
-function providerTargets(config: WebLiteConfig, provider: Provider): SearchTarget[] {
+function providerTargets(config: SearchControlConfig, provider: Provider): SearchTarget[] {
 	return config.apiKeys[provider].map((apiKey) => ({
 		provider,
 		apiKey,
@@ -34,7 +33,7 @@ function providerTargets(config: WebLiteConfig, provider: Provider): SearchTarge
 	}));
 }
 
-export function buildSearchPlan(config: WebLiteConfig, mode: ProviderMode = config.provider): SearchTarget[] {
+export function buildSearchPlan(config: SearchControlConfig, mode: ProviderMode = config.provider): SearchTarget[] {
 	if (mode === "balanced") {
 		return shuffle(config.providers.flatMap((provider) => providerTargets(config, provider)));
 	}
@@ -49,8 +48,7 @@ export function buildSearchPlan(config: WebLiteConfig, mode: ProviderMode = conf
 async function searchWithTarget(target: SearchTarget, query: string, options: SearchOptions): Promise<SearchResponse> {
 	if (target.provider === "exa") return searchExa(query, target.apiKey, options);
 	if (target.provider === "tavily") return searchTavily(query, target.apiKey, options);
-	if (target.provider === "brave") return searchBrave(query, target.apiKey, options);
-	return searchDoubao(query, target.apiKey, options);
+	return searchBrave(query, target.apiKey, options);
 }
 
 function errorMessage(err: unknown): string {
@@ -59,7 +57,7 @@ function errorMessage(err: unknown): string {
 
 export async function searchOne(
 	query: string,
-	config: WebLiteConfig,
+	config: SearchControlConfig,
 	options: Partial<SearchOptions> = {},
 ): Promise<RoutedSearchResult & { attempts: FailedAttempt[] }> {
 	const plan = buildSearchPlan(config);

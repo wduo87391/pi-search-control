@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 export const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
-export const PROVIDERS = ["exa", "tavily", "brave", "doubao"] as const;
+export const PROVIDERS = ["exa", "tavily", "brave"] as const;
 export type Provider = typeof PROVIDERS[number];
 export type ProviderMode = Provider | "auto" | "balanced";
 
@@ -18,7 +18,7 @@ export interface FetchDefaults {
 	maxChars: number;
 }
 
-export interface WebLiteConfig {
+export interface SearchControlConfig {
 	provider: ProviderMode;
 	providers: Provider[];
 	apiKeys: Record<Provider, string[]>;
@@ -26,7 +26,7 @@ export interface WebLiteConfig {
 	fetch: FetchDefaults;
 }
 
-const DEFAULT_PROVIDERS: Provider[] = ["exa", "tavily", "brave", "doubao"];
+const DEFAULT_PROVIDERS: Provider[] = ["exa", "tavily", "brave"];
 const DEFAULT_SEARCH: SearchDefaults = { numResults: 5, timeoutMs: 20_000 };
 const DEFAULT_FETCH: FetchDefaults = { timeoutMs: 20_000, maxChars: 30_000 };
 
@@ -37,8 +37,6 @@ const LEGACY_FIELDS = [
 	"tavilyApiKeys",
 	"braveApiKey",
 	"braveApiKeys",
-	"doubaoApiKey",
-	"doubaoApiKeys",
 	"loadBalancing",
 	"workflow",
 	"geminiApiKey",
@@ -56,18 +54,18 @@ function isProvider(value: unknown): value is Provider {
 function normalizeProviderMode(value: unknown): ProviderMode {
 	if (value === undefined) return "auto";
 	if (value === "auto" || value === "balanced" || isProvider(value)) return value;
-	throw new Error(`Invalid provider in ${CONFIG_PATH}: expected auto, balanced, exa, tavily, brave, or doubao.`);
+	throw new Error(`Invalid provider in ${CONFIG_PATH}: expected auto, balanced, exa, tavily, or brave.`);
 }
 
 function normalizeProviderList(value: unknown): Provider[] {
 	if (value === undefined) return DEFAULT_PROVIDERS;
 	if (!Array.isArray(value)) {
-		throw new Error(`Invalid providers in ${CONFIG_PATH}: expected an array like ["exa", "tavily", "brave", "doubao"].`);
+		throw new Error(`Invalid providers in ${CONFIG_PATH}: expected an array like ["exa", "tavily", "brave"].`);
 	}
 	const providers: Provider[] = [];
 	for (const item of value) {
 		if (!isProvider(item)) {
-			throw new Error(`Invalid provider in providers: ${JSON.stringify(item)}. Expected exa, tavily, brave, or doubao.`);
+			throw new Error(`Invalid provider in providers: ${JSON.stringify(item)}. Expected exa, tavily, or brave.`);
 		}
 		if (!providers.includes(item)) providers.push(item);
 	}
@@ -103,12 +101,12 @@ function assertNoLegacyFields(raw: Record<string, unknown>, sourcePath: string):
 	if (found.length > 0) {
 		throw new Error(
 			`${sourcePath} uses legacy fields (${found.join(", ")}). ` +
-			"pi-web-lite only supports the new format: { provider, providers, apiKeys: { exa: [], tavily: [], brave: [], doubao: [] } }."
+			"pi-search-control only supports the new format: { provider, providers, apiKeys: { exa: [], tavily: [], brave: [] } }."
 		);
 	}
 }
 
-export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): WebLiteConfig {
+export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): SearchControlConfig {
 	if (!isRecord(raw)) {
 		throw new Error(`${sourcePath} must contain a JSON object.`);
 	}
@@ -117,7 +115,7 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): WebLiteConf
 
 	const apiKeysRaw = raw.apiKeys;
 	if (!isRecord(apiKeysRaw)) {
-		throw new Error(`Missing apiKeys in ${sourcePath}. Expected { "apiKeys": { "exa": [], "tavily": [], "brave": [], "doubao": [] } }.`);
+		throw new Error(`Missing apiKeys in ${sourcePath}. Expected { "apiKeys": { "exa": [], "tavily": [], "brave": [] } }.`);
 	}
 
 	const searchRaw = isRecord(raw.search) ? raw.search : {};
@@ -130,7 +128,6 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): WebLiteConf
 			exa: normalizeKeys(apiKeysRaw.exa, "exa"),
 			tavily: normalizeKeys(apiKeysRaw.tavily, "tavily"),
 			brave: normalizeKeys(apiKeysRaw.brave, "brave"),
-			doubao: normalizeKeys(apiKeysRaw.doubao, "doubao"),
 		},
 		search: {
 			// Respect user-configured value; provider APIs enforce their own caps.
@@ -144,7 +141,7 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): WebLiteConf
 	};
 }
 
-export function loadConfig(): WebLiteConfig {
+export function loadConfig(): SearchControlConfig {
 	if (!existsSync(CONFIG_PATH)) {
 		throw new Error(`Missing config file: ${CONFIG_PATH}`);
 	}
