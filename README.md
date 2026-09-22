@@ -61,6 +61,8 @@ A Search Profile names an ordered list of providers. The `web_search` tool follo
 
 `defaultProfile` is required and must name a key in `profiles`. Every profile must declare a non-empty `providers` array of `exa`, `tavily`, or `brave`. Every credential declares a globally unique `alias` and the `env` variable that carries the key at runtime; no raw key is ever written to the config file. A declared but unset environment variable only makes that credential unavailable, which degrades its provider rather than failing the load. User-visible output names credentials by alias only, never by key content or environment-variable name.
 
+A profile may also declare an optional `guidance` string. It is appended after the non-replaceable built-in safety, privacy, and policy guidance, so it can add to the model's instructions but cannot replace or weaken the built-in rules. Switching profiles changes the injected guidance for the session.
+
 Legacy fields are intentionally rejected, including the old `apiKeys` structure (use `credentials` instead):
 
 - `provider`, `providers`, `apiKeys`

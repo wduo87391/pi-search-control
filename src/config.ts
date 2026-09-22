@@ -21,6 +21,11 @@ export interface FetchDefaults {
 export interface SearchProfile {
 	name: string;
 	providers: Provider[];
+	/**
+	 * Optional user supplement appended after the non-replaceable built-in
+	 * guidance. It can add to the built-in rules but never replace them.
+	 */
+	guidance?: string;
 }
 
 export type UsagePeriodKind = "calendar-day" | "calendar-month" | "rolling-days";
@@ -259,6 +264,20 @@ function normalizeNumber(value: unknown, fallback: number, name: string): number
 	return Math.floor(value);
 }
 
+function normalizeProfileGuidance(
+	value: unknown,
+	profileName: string,
+	sourcePath: string,
+): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || value.trim() === "") {
+		throw new Error(
+			`Invalid profiles.${profileName}.guidance in ${sourcePath}: expected a non-empty string.`
+		);
+	}
+	return value.trim();
+}
+
 function normalizeProfileProviders(value: unknown, profileName: string, sourcePath: string): Provider[] {
 	if (!Array.isArray(value) || value.length === 0) {
 		throw new Error(
@@ -295,9 +314,11 @@ function normalizeProfiles(value: unknown, sourcePath: string): Record<string, S
 				`Invalid profiles.${name} in ${sourcePath}: expected an object with a providers array.`
 			);
 		}
+		const guidance = normalizeProfileGuidance(raw.guidance, name, sourcePath);
 		profiles[name] = {
 			name,
 			providers: normalizeProfileProviders(raw.providers, name, sourcePath),
+			...(guidance !== undefined ? { guidance } : {}),
 		};
 	}
 	return profiles;

@@ -6,6 +6,7 @@ import { loadConfig, PROVIDERS, type SearchControlConfig, type SearchProfile } f
 import { resolveCredentials } from "./credentials.ts";
 import { estimateAttempt, formatEstimate } from "./estimates.ts";
 import { fetchOne } from "./fetch.ts";
+import { composeGuidance } from "./guidance.ts";
 import { createFileHealthStore, describeCooldowns, loadHealth } from "./health.ts";
 import {
 	createFileLedgerStore,
@@ -55,6 +56,9 @@ export default function (pi: ExtensionAPI) {
 	let currentConfig: SearchControlConfig | undefined;
 	let configError: string | undefined;
 	let activeProfileName: string | undefined;
+	// The composed guidance fragment for the active profile, recomputed only when
+	// the profile changes so the prompt prefix stays stable across turns.
+	let activeGuidance = "";
 	let profileWarning: string | undefined;
 	let ledgerWarning: string | undefined;
 	let healthWarning: string | undefined;
@@ -107,6 +111,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			activeProfileName = currentConfig.defaultProfile;
 		}
+		activeGuidance = composeGuidance(currentConfig.profiles[activeProfileName]);
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -225,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		activeProfileName = name;
 		profileWarning = undefined;
+		activeGuidance = composeGuidance(currentConfig.profiles[name]);
 		pi.appendEntry(PROFILE_ENTRY, { profile: name });
 		updateStatus(ctx);
 		ctx.ui.notify(`Search Profile: ${name} (${currentConfig.profiles[name].providers.join(">")})`, "info");
@@ -279,6 +285,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_tree", async (_event, ctx) => {
 		restoreProfile(ctx);
 		updateStatus(ctx);
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		if (!activeGuidance) return undefined;
+		return { systemPrompt: `${event.systemPrompt}\n\n${activeGuidance}` };
 	});
 
 	pi.registerTool({

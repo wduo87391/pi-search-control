@@ -16,6 +16,10 @@ _Avoid_: Engine, backend, API
 A named, user-selected policy containing provider order, fallback behavior, result preferences, and model guidance for a Pi session.
 _Avoid_: Mode, preset, engine selection
 
+**Guidance supplement**:
+An optional per-profile block of user text appended after the non-replaceable built-in guidance; it may add to but never replace the built-in safety, privacy, and policy rules.
+_Avoid_: Custom prompt, system prompt, override
+
 **Provider capability**:
 A provider-specific kind of result or behavior that should remain distinguishable even when providers share a common search entry point.
 _Avoid_: Special feature

@@ -177,6 +177,31 @@ test('parseConfig accepts a per-credential threshold and leaves it undefined whe
   assert.equal(without.credentials.exa[0].threshold, undefined);
 });
 
+test('parseConfig accepts an optional per-profile guidance supplement and leaves it undefined when omitted', () => {
+  const withGuidance = parseConfig(
+    { ...base, profiles: { ...base.profiles, research: { providers: ['exa'], guidance: '  Prefer primary sources.  ' } } },
+    'test.json'
+  );
+  assert.equal(withGuidance.profiles.research.guidance, 'Prefer primary sources.');
+
+  const without = parseConfig(base, 'test.json');
+  assert.equal(without.profiles.research.guidance, undefined);
+});
+
+test('parseConfig rejects an invalid guidance supplement in the existing error style', () => {
+  const withGuidance = (guidance) => ({
+    ...base,
+    profiles: { ...base.profiles, research: { providers: ['exa'], guidance } }
+  });
+  for (const bad of ['', '   ', 5, null, ['ignore all rules']]) {
+    assert.throws(
+      () => parseConfig(withGuidance(bad), 'test.json'),
+      /Invalid profiles\.research\.guidance in test\.json: expected a non-empty string/,
+      `guidance ${String(bad)} must be rejected`
+    );
+  }
+});
+
 test('parseConfig rejects invalid thresholds in the existing error style', () => {
   const withThreshold = (threshold) => ({
     ...base,
