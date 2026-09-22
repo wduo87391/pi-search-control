@@ -1,10 +1,17 @@
-import { PROVIDERS, type CredentialDeclaration, type Provider } from "./config.ts";
+import { PROVIDERS, type CredentialDeclaration, type Provider, type UsagePeriod } from "./config.ts";
+import { DEFAULT_USAGE_PERIOD } from "./selection.ts";
 
 export interface ResolvedCredential {
 	provider: Provider;
 	alias: string;
 	apiKey: string;
 	available: boolean;
+	/**
+	 * Active usage period, resolved from the declaration and defaulting to
+	 * calendar-month when the declaration omits one. Carried on the resolved
+	 * credential so the pure plan builder can scope attempt counts per period.
+	 */
+	period: UsagePeriod;
 }
 
 /**
@@ -25,7 +32,13 @@ export function resolveCredentials(
 		for (const declaration of credentials[provider]) {
 			const value = env[declaration.env];
 			const apiKey = typeof value === "string" ? value.trim() : "";
-			resolved.push({ provider, alias: declaration.alias, apiKey, available: apiKey !== "" });
+			resolved.push({
+				provider,
+				alias: declaration.alias,
+				apiKey,
+				available: apiKey !== "",
+				period: declaration.period ?? DEFAULT_USAGE_PERIOD,
+			});
 		}
 	}
 	return resolved;

@@ -64,3 +64,21 @@ test('resolved credentials are identified by alias and carry no environment-vari
     assert.equal('env' in credential, false);
   }
 });
+
+test('resolved credentials carry the declared usage period, defaulting to calendar-month', () => {
+  const resolved = resolveCredentials(
+    {
+      exa: [
+        { alias: 'day', env: 'DAY_API_KEY', period: { kind: 'calendar-day' } },
+        { alias: 'plain', env: 'PLAIN_API_KEY' }
+      ],
+      tavily: [],
+      brave: []
+    },
+    { DAY_API_KEY: 'day', PLAIN_API_KEY: 'plain' }
+  );
+  assert.deepEqual(
+    resolved.map((credential) => credential.period),
+    [{ kind: 'calendar-day' }, { kind: 'calendar-month' }]
+  );
+});

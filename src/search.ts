@@ -1,5 +1,6 @@
 import { type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials, type ResolvedCredential } from "./credentials.ts";
+import { rankCredentials, type PenaltyState } from "./selection.ts";
 import { classifyError, type ErrorCategory } from "./ledger.ts";
 import { formatSearchMarkdown, isAbortError, type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
@@ -47,19 +48,67 @@ export class SearchFailureError extends Error {
 }
 
 /**
- * Build the ordered attempt plan for a Search Profile from resolved credentials.
- * Credentials that are unavailable in the environment are excluded so the plan
- * never reaches for a key that is not there. The plan is identified by alias only.
+ * Selection inputs the plan builder needs beyond the profile and resolved
+ * credentials. The clock and attempt history are injected so the builder stays
+ * pure: it never reads the system time, the filesystem, the network, or the
+ * environment.
  */
-export function buildSearchPlan(profile: SearchProfile, credentials: ResolvedCredential[]): SearchTarget[] {
-	const byProvider = new Map<Provider, SearchTarget[]>();
+export interface SearchPlanInput {
+	/** Injected clock (ms), used to scope attempt counts to each credential's period. */
+	now: number;
+	/** Recorded attempt timestamps (ms) per credential alias; absent means none. */
+	attemptsByAlias?: Record<string, number[]>;
+	/** Health/threshold penalties per alias; absent means no penalties. */
+	penalties?: Record<string, PenaltyState>;
+}
+
+function toTarget(credential: ResolvedCredential): SearchTarget {
+	return { provider: credential.provider, alias: credential.alias, apiKey: credential.apiKey };
+}
+
+/**
+ * Order one provider's available credentials least-used-first through the shared
+ * pure selector, then map the ranked candidates back to their resolved keys.
+ */
+function orderProvider(candidates: ResolvedCredential[], input: SearchPlanInput): ResolvedCredential[] {
+	const byAlias = new Map(candidates.map((credential) => [credential.alias, credential]));
+	const ranked = rankCredentials(
+		candidates.map((credential) => ({
+			alias: credential.alias,
+			available: credential.available,
+			period: credential.period,
+			attemptTimes: input.attemptsByAlias?.[credential.alias] ?? [],
+		})),
+		{ now: input.now, penalties: input.penalties }
+	);
+	return ranked.map((candidate) => byAlias.get(candidate.alias)!);
+}
+
+/**
+ * Build the ordered attempt plan for a Search Profile from resolved credentials.
+ * The plan follows the profile's provider order; within each provider the shared
+ * selector ranks credentials least-used-first with deterministic tie-breaking,
+ * excludes unavailable and cooling credentials, and demotes threshold-crossed
+ * ones. The plan is identified by alias only.
+ *
+ * With no attempt data and no penalties the ranking collapses to the previous
+ * declaration-order behaviour, so an un-wired caller does not regress.
+ */
+export function buildSearchPlan(
+	profile: SearchProfile,
+	credentials: ResolvedCredential[],
+	input: SearchPlanInput
+): SearchTarget[] {
+	const byProvider = new Map<Provider, ResolvedCredential[]>();
 	for (const credential of credentials) {
 		if (!credential.available) continue;
-		const targets = byProvider.get(credential.provider) ?? [];
-		targets.push({ provider: credential.provider, alias: credential.alias, apiKey: credential.apiKey });
-		byProvider.set(credential.provider, targets);
+		const candidates = byProvider.get(credential.provider) ?? [];
+		candidates.push(credential);
+		byProvider.set(credential.provider, candidates);
 	}
-	return profile.providers.flatMap((provider) => byProvider.get(provider) ?? []);
+	return profile.providers.flatMap((provider) =>
+		orderProvider(byProvider.get(provider) ?? [], input).map(toTarget)
+	);
 }
 
 function noUsableCredentialsMessage(profile: SearchProfile, credentials: ResolvedCredential[]): string {
@@ -88,7 +137,10 @@ export async function searchOne(
 	options: Partial<SearchOptions> = {},
 ): Promise<RoutedSearchResult & { attempts: FailedAttempt[] }> {
 	const credentials = resolveCredentials(config.credentials, process.env);
-	const plan = buildSearchPlan(profile, credentials);
+	// Ticket 06 (search orchestration) injects the clock and ledger-derived
+	// attempt counts here, plus real cooldown/threshold penalties. Passing none
+	// keeps the previous declaration-order plan until that wiring lands.
+	const plan = buildSearchPlan(profile, credentials, { now: Date.now() });
 	if (plan.length === 0) {
 		throw new Error(noUsableCredentialsMessage(profile, credentials));
 	}
