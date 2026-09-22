@@ -32,6 +32,10 @@ _Avoid_: API call, tool call
 One external request made with a specific provider credential while satisfying a search request.
 _Avoid_: Search, query
 
+**Search orchestration**:
+The per-query step that routes a Search Request through the profile's ordered plan, returns the first technically successful response, falls back only on technical failure, and accounts for every attempt.
+_Avoid_: Router, dispatcher, scheduler
+
 **Usage ledger**:
 The control plane's local record of search requests, provider attempts, outcomes, and estimated consumption; it is not the provider's authoritative billing balance.
 _Avoid_: Exact quota, billing counter

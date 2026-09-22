@@ -2,19 +2,24 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { loadConfig, PROVIDERS, type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { loadConfig, PROVIDERS, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials } from "./credentials.ts";
 import { estimateAttempt, formatEstimate } from "./estimates.ts";
 import { fetchOne } from "./fetch.ts";
 import {
 	createFileLedgerStore,
 	loadLedger,
-	recordLedgerEvents,
 	summarizeEvents,
 	summarizePeriod,
-	type LedgerEvent,
 } from "./ledger.ts";
-import { searchOne, SearchFailureError, type FailedAttempt, type RoutedSearchResult } from "./search.ts";
+import { searchWithTarget } from "./search.ts";
+import {
+	createLedgerPort,
+	noHealth,
+	orchestrateBatch,
+	type OrchestratorDeps,
+	type SearchOutcome,
+} from "./orchestrator.ts";
 
 function normalizeList(single: unknown, many: unknown): string[] {
 	const raw = Array.isArray(many) ? many : (typeof single === "string" ? [single] : []);
@@ -27,7 +32,7 @@ function normalizeList(single: unknown, many: unknown): string[] {
 	return values;
 }
 
-function formatSearchBatch(results: Array<(RoutedSearchResult & { attempts: FailedAttempt[] }) | { query: string; error: string }>): string {
+function formatSearchBatch(results: SearchOutcome[]): string {
 	return results.map((result) => {
 		if ("error" in result) {
 			return `## Search results for: "${result.query}"\n\nError: ${result.error}`;
@@ -44,52 +49,6 @@ function compactList(items: string[], max = 4): string {
 const PROFILE_ENTRY = "search-profile";
 const STATUS_KEY = "search-profile";
 
-function buildLedgerEvents(
-	config: SearchControlConfig,
-	sessionId: string,
-	requestId: string,
-	profileName: string,
-	at: number,
-	failed: FailedAttempt[],
-	success: { provider: Provider; alias: string } | undefined,
-): LedgerEvent[] {
-	const events: LedgerEvent[] = [{ kind: "request", at, sessionId, requestId, profile: profileName }];
-	for (const attempt of failed) {
-		const estimate = estimateAttempt(config.estimates[attempt.provider]);
-		events.push({
-			kind: "attempt",
-			at,
-			sessionId,
-			requestId,
-			provider: attempt.provider,
-			alias: attempt.alias,
-			outcome: "failure",
-			errorCategory: attempt.errorCategory,
-			units: estimate.units,
-			costUsd: estimate.costUsd,
-			estimatorVersion: estimate.version,
-			estimatorDate: estimate.date,
-		});
-	}
-	if (success) {
-		const estimate = estimateAttempt(config.estimates[success.provider]);
-		events.push({
-			kind: "attempt",
-			at,
-			sessionId,
-			requestId,
-			provider: success.provider,
-			alias: success.alias,
-			outcome: "success",
-			units: estimate.units,
-			costUsd: estimate.costUsd,
-			estimatorVersion: estimate.version,
-			estimatorDate: estimate.date,
-		});
-	}
-	return events;
-}
-
 export default function (pi: ExtensionAPI) {
 	let currentConfig: SearchControlConfig | undefined;
 	let configError: string | undefined;
@@ -97,6 +56,14 @@ export default function (pi: ExtensionAPI) {
 	let profileWarning: string | undefined;
 	let ledgerWarning: string | undefined;
 	const ledgerStore = createFileLedgerStore();
+	const orchestratorDeps: OrchestratorDeps = {
+		now: () => Date.now(),
+		newRequestId: () => randomUUID(),
+		search: searchWithTarget,
+		resolveCredentials: (config) => resolveCredentials(config.credentials, process.env),
+		ledger: createLedgerPort(ledgerStore, { onWarning: (warning) => { ledgerWarning = warning; } }),
+		health: noHealth,
+	};
 
 	function refreshConfig(): void {
 		try {
@@ -151,33 +118,6 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (profileWarning) text += ` | warn: ${profileWarning}`;
 		ctx.ui.setStatus(STATUS_KEY, text);
-	}
-
-	function recordSearch(
-		ctx: ExtensionContext,
-		config: SearchControlConfig,
-		profile: SearchProfile,
-		requestId: string,
-		at: number,
-		failed: FailedAttempt[],
-		success: { provider: Provider; alias: string } | undefined,
-	): void {
-		try {
-			const events = buildLedgerEvents(
-				config,
-				ctx.sessionManager.getSessionId(),
-				requestId,
-				profile.name,
-				at,
-				failed,
-				success,
-			);
-			const { warning } = recordLedgerEvents(ledgerStore, events, at);
-			ledgerWarning = warning;
-		} catch (err) {
-			// The usage ledger is diagnostics: a write failure must never fail a search.
-			ledgerWarning = `Usage ledger write failed: ${err instanceof Error ? err.message : String(err)}`;
-		}
 	}
 
 	function formatSearchStatus(ctx: ExtensionContext): string {
@@ -357,31 +297,22 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`Search configuration unavailable: ${configError ?? "unknown error"}`);
 			}
 			const profile = resolveProfile();
-			const results: Array<(RoutedSearchResult & { attempts: FailedAttempt[] }) | { query: string; error: string }> = [];
-			const numResults = config.search.numResults;
-
-			for (let i = 0; i < queries.length; i++) {
-				const query = queries[i];
-				onUpdate?.({
-					content: [{ type: "text", text: `Searching ${i + 1}/${queries.length}: ${query}` }],
-					details: { phase: "search", current: i + 1, total: queries.length, query },
-				});
-				const requestId = randomUUID();
-				const at = Date.now();
-				let failed: FailedAttempt[] = [];
-				let success: { provider: Provider; alias: string } | undefined;
-				try {
-					const result = await searchOne(query, config, profile, { numResults, signal });
-					failed = result.attempts;
-					success = { provider: result.provider, alias: result.alias };
-					results.push(result);
-				} catch (err) {
-					if (err instanceof SearchFailureError) failed = err.attempts;
-					const message = err instanceof Error ? err.message : String(err);
-					results.push({ query, error: message });
-				}
-				recordSearch(ctx, config, profile, requestId, at, failed, success);
-			}
+			const results = await orchestrateBatch(
+				{
+					queries,
+					config,
+					profile,
+					sessionId: ctx.sessionManager.getSessionId(),
+					options: { numResults: config.search.numResults, signal },
+					onQuery: (current, total, query) => {
+						onUpdate?.({
+							content: [{ type: "text", text: `Searching ${current}/${total}: ${query}` }],
+							details: { phase: "search", current, total, query },
+						});
+					},
+				},
+				orchestratorDeps,
+			);
 
 			const successful = results.filter((result) => !("error" in result)).length;
 			return {
