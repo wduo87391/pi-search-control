@@ -2,6 +2,13 @@ import type { SearchControlConfig, SearchProfile } from "./config.ts";
 import type { ResolvedCredential } from "./credentials.ts";
 import { estimateAttempt } from "./estimates.ts";
 import {
+	loadHealth,
+	penaltiesFromHealth,
+	recordCooldowns,
+	type CooldownFailure,
+	type HealthStore,
+} from "./health.ts";
+import {
 	DETAIL_RETENTION_MS,
 	classifyError,
 	loadLedger,
@@ -44,11 +51,15 @@ export interface LedgerPort {
 }
 
 /**
- * The cooldown/threshold seam. Ticket 07 supplies the real store; until then the
- * no-op default reports no penalties. The orchestrator only reads penalties.
+ * The cooldown/threshold seam. Penalties feed routing; failures feed the
+ * cooldown store. Persistence lives in `src/health.ts` behind the same injected
+ * store pattern as the ledger.
  */
 export interface HealthPort {
+	/** Active penalties (cooldowns, demotions) per alias, for the selector. */
 	penalties(now: number): Record<string, PenaltyState>;
+	/** Enter a time-bounded cooldown for any failure whose category triggers one. */
+	record(failures: readonly CooldownFailure[], now: number): void;
 }
 
 /**
@@ -73,10 +84,37 @@ export const noopLedger: LedgerPort = {
 	record: () => {},
 };
 
-/** Health port that reports no cooldowns or demotions. */
+/** Health port that reports no cooldowns and records none. */
 export const noHealth: HealthPort = {
 	penalties: () => ({}),
+	record: () => {},
 };
+
+/**
+ * Wrap the health store as an orchestrator port, mirroring `createLedgerPort`.
+ * Warnings are surfaced through `onWarning` so a damaged store degrades rather
+ * than failing a search.
+ */
+export function createHealthPort(
+	store: HealthStore,
+	options: { onWarning?(warning: string | undefined): void } = {},
+): HealthPort {
+	return {
+		penalties(now: number): Record<string, PenaltyState> {
+			return penaltiesFromHealth(loadHealth(store, now).state, now);
+		},
+		record(failures: readonly CooldownFailure[], now: number): void {
+			try {
+				const { warning } = recordCooldowns(store, failures, now);
+				options.onWarning?.(warning);
+			} catch (err) {
+				options.onWarning?.(
+					`Health store write failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		},
+	};
+}
 
 /**
  * Wrap the existing ledger store as an orchestrator port. Persistence stays in
@@ -198,6 +236,15 @@ function recordAccounting(deps: OrchestratorDeps, events: LedgerEvent[], at: num
 	}
 }
 
+function recordCooldown(deps: OrchestratorDeps, failure: FailedAttempt, at: number): void {
+	// Cooldown state is diagnostics: a write failure must never fail a search.
+	try {
+		deps.health.record([{ alias: failure.alias, errorCategory: failure.errorCategory }], at);
+	} catch {
+		// Swallowed on purpose; the edge port reports warnings.
+	}
+}
+
 /**
  * Route one logical query through the Search Profile's ordered plan. Fallback
  * happens only on technical failure: the first technically successful response
@@ -218,11 +265,17 @@ export async function orchestrateSearch(
 		attemptsByAlias: deps.ledger.attemptsByAlias(at),
 		penalties: deps.health.penalties(at),
 	});
+	const requestId = deps.newRequestId();
 	if (plan.length === 0) {
+		// The query was still submitted to the control plane, so it is a Search
+		// Request with zero Provider Attempts (requirements.md: Usage ledger).
+		recordAccounting(
+			deps,
+			buildAccountingEvents(config, sessionId, requestId, profile.name, at, [], undefined),
+			at,
+		);
 		throw new Error(noUsableCredentialsMessage(profile, credentials));
 	}
-
-	const requestId = deps.newRequestId();
 	const searchOptions: SearchOptions = {
 		numResults: options.numResults ?? config.search.numResults,
 		timeoutMs: options.timeoutMs ?? config.search.timeoutMs,
@@ -252,12 +305,14 @@ export async function orchestrateSearch(
 			};
 		} catch (err) {
 			if (isAbortError(err)) throw err;
-			attempts.push({
+			const failure: FailedAttempt = {
 				provider: target.provider,
 				alias: target.alias,
 				error: errorMessage(err),
 				errorCategory: classifyError(err),
-			});
+			};
+			attempts.push(failure);
+			recordCooldown(deps, failure, at);
 		}
 	}
 

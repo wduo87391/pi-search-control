@@ -43,3 +43,7 @@ _Avoid_: Exact quota, billing counter
 **Usage period**:
 The window over which a credential's local attempt count is measured for least-used routing: a UTC calendar day, a UTC calendar month, or a trailing window of N days. A credential that declares none defaults to a calendar month.
 _Avoid_: Quota, billing cycle
+
+**Credential cooldown**:
+A time-bounded, cross-session exclusion from routing entered after a credential hits a rate limit or a transient failure; it always expires and never applies to authentication failures or aborts.
+_Avoid_: Ban, disable, backoff

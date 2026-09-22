@@ -2,7 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConfig } from '../src/config.ts';
 import { resolveCredentials } from '../src/credentials.ts';
-import { orchestrateBatch, orchestrateSearch } from '../src/orchestrator.ts';
+import { orchestrateBatch, orchestrateSearch, createHealthPort } from '../src/orchestrator.ts';
+import {
+  RATE_LIMIT_COOLDOWN_MS,
+  TRANSIENT_COOLDOWN_MS,
+  activeCooldowns,
+  createMemoryHealthStore
+} from '../src/health.ts';
 
 const NOW = Date.UTC(2026, 9, 20, 12, 0, 0); // 2026-10-20T12:00:00Z
 
@@ -48,7 +54,7 @@ function makeDeps(overrides = {}) {
       attemptsByAlias: () => ({}),
       record: (events) => { recorded.push(...events); }
     },
-    health: { penalties: () => ({}) },
+    health: { penalties: () => ({}), record: () => {} },
     ...overrides
   };
   return { deps, recorded };
@@ -249,7 +255,7 @@ test('ledger-derived attempt counts steer least-used routing', async () => {
 
 test('health penalties steer routing without any persistence in the orchestrator', async () => {
   const { deps } = makeDeps({
-    health: { penalties: () => ({ 'tvly-work': 'cooling' }) }
+    health: { penalties: () => ({ 'tvly-work': 'cooling' }), record: () => {} }
   });
 
   const result = await orchestrateSearch(input({ profile: tavilyOnly }), deps);
@@ -270,6 +276,132 @@ test('the injected clock and config defaults drive the attempt options', async (
 
   assert.equal(seen.numResults, config.search.numResults);
   assert.equal(seen.timeoutMs, config.search.timeoutMs);
+});
+
+test('a query with no usable credentials records a Search Request with zero attempts', async () => {
+  const { deps, recorded } = makeDeps({
+    resolveCredentials: (cfg) => resolveCredentials(cfg.credentials, {})
+  });
+
+  await assert.rejects(() => orchestrateSearch(input({ profile: tavilyOnly }), deps));
+
+  const requests = recorded.filter((event) => event.kind === 'request');
+  const attempts = recorded.filter((event) => event.kind === 'attempt');
+  assert.equal(requests.length, 1, 'the rejected query was still submitted');
+  assert.equal(requests[0].profile, 'tavily');
+  assert.equal(attempts.length, 0);
+});
+
+test('a rate-limited credential enters a cooldown with the rate-limit window', async () => {
+  const store = createMemoryHealthStore();
+  const { deps } = makeDeps({
+    health: createHealthPort(store),
+    search: async (target) => {
+      if (target.alias === 'tvly-work') throw new Error('429 rate limit exceeded');
+      return okResponse();
+    }
+  });
+
+  const result = await orchestrateSearch(input({ profile: tavilyOnly }), deps);
+
+  assert.equal(result.alias, 'tvly-personal');
+  const cooling = activeCooldowns(store.read().state, NOW);
+  assert.equal(cooling['tvly-work'].category, 'rate_limit');
+  assert.equal(cooling['tvly-work'].until, NOW + RATE_LIMIT_COOLDOWN_MS);
+});
+
+test('a transiently failing credential enters a cooldown with the short window', async () => {
+  const store = createMemoryHealthStore();
+  const { deps } = makeDeps({
+    health: createHealthPort(store),
+    search: async (target) => {
+      if (target.alias === 'tvly-work') throw new Error('503 service unavailable');
+      return okResponse();
+    }
+  });
+
+  await orchestrateSearch(input({ profile: tavilyOnly }), deps);
+
+  const cooling = activeCooldowns(store.read().state, NOW);
+  assert.equal(cooling['tvly-work'].category, 'service');
+  assert.equal(cooling['tvly-work'].until, NOW + TRANSIENT_COOLDOWN_MS);
+});
+
+test('an authentication failure does not enter a cooldown', async () => {
+  const store = createMemoryHealthStore();
+  const { deps } = makeDeps({
+    health: createHealthPort(store),
+    search: async (target) => {
+      if (target.alias === 'tvly-work') throw new Error('401 unauthorized');
+      return okResponse();
+    }
+  });
+
+  await orchestrateSearch(input({ profile: tavilyOnly }), deps);
+
+  assert.deepEqual(activeCooldowns(store.read().state, NOW), {});
+});
+
+test('an abort does not enter a cooldown', async () => {
+  const store = createMemoryHealthStore();
+  const abort = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+  const { deps } = makeDeps({
+    health: createHealthPort(store),
+    search: async () => { throw abort; }
+  });
+
+  await assert.rejects(() => orchestrateSearch(input(), deps), (err) => err === abort);
+
+  assert.deepEqual(activeCooldowns(store.read().state, NOW), {});
+});
+
+test('a cooling credential is skipped until the clock passes its expiry', async () => {
+  const store = createMemoryHealthStore();
+  let clock = NOW;
+  const calls = [];
+  const { deps } = makeDeps({
+    health: createHealthPort(store),
+    now: () => clock,
+    search: async (target) => {
+      calls.push(target.alias);
+      if (target.alias === 'tvly-work' && clock === NOW) throw new Error('429 rate limit exceeded');
+      return okResponse();
+    }
+  });
+
+  await orchestrateSearch(input({ profile: tavilyOnly }), deps);
+  calls.length = 0;
+
+  const during = await orchestrateSearch(input({ profile: tavilyOnly }), deps);
+  assert.equal(during.alias, 'tvly-personal', 'cooling credential is skipped');
+  assert.deepEqual(calls, ['tvly-personal']);
+
+  clock = NOW + RATE_LIMIT_COOLDOWN_MS + 1;
+  calls.length = 0;
+  await orchestrateSearch(input({ profile: tavilyOnly }), deps);
+  assert.ok(calls.includes('tvly-work'), 'expired credential becomes eligible again');
+});
+
+test('cooldown state survives a new session over the same store', async () => {
+  const store = createMemoryHealthStore();
+  const { deps } = makeDeps({
+    health: createHealthPort(store),
+    search: async (target) => {
+      if (target.alias === 'tvly-work') throw new Error('429 rate limit exceeded');
+      return okResponse();
+    }
+  });
+  await orchestrateSearch(input({ profile: tavilyOnly, sessionId: 's1' }), deps);
+
+  const calls = [];
+  const { deps: freshSession } = makeDeps({
+    health: createHealthPort(store),
+    search: async (target) => { calls.push(target.alias); return okResponse(); }
+  });
+  const result = await orchestrateSearch(input({ profile: tavilyOnly, sessionId: 's2' }), freshSession);
+
+  assert.equal(result.alias, 'tvly-personal');
+  assert.deepEqual(calls, ['tvly-personal']);
 });
 
 test('a profile with no available credentials keeps the existing message style', async () => {

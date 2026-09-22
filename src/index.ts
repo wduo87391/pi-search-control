@@ -6,6 +6,7 @@ import { loadConfig, PROVIDERS, type SearchControlConfig, type SearchProfile } f
 import { resolveCredentials } from "./credentials.ts";
 import { estimateAttempt, formatEstimate } from "./estimates.ts";
 import { fetchOne } from "./fetch.ts";
+import { createFileHealthStore, describeCooldowns, loadHealth } from "./health.ts";
 import {
 	createFileLedgerStore,
 	loadLedger,
@@ -14,8 +15,8 @@ import {
 } from "./ledger.ts";
 import { searchWithTarget } from "./search.ts";
 import {
+	createHealthPort,
 	createLedgerPort,
-	noHealth,
 	orchestrateBatch,
 	type OrchestratorDeps,
 	type SearchOutcome,
@@ -55,14 +56,16 @@ export default function (pi: ExtensionAPI) {
 	let activeProfileName: string | undefined;
 	let profileWarning: string | undefined;
 	let ledgerWarning: string | undefined;
+	let healthWarning: string | undefined;
 	const ledgerStore = createFileLedgerStore();
+	const healthStore = createFileHealthStore();
 	const orchestratorDeps: OrchestratorDeps = {
 		now: () => Date.now(),
 		newRequestId: () => randomUUID(),
 		search: searchWithTarget,
 		resolveCredentials: (config) => resolveCredentials(config.credentials, process.env),
 		ledger: createLedgerPort(ledgerStore, { onWarning: (warning) => { ledgerWarning = warning; } }),
-		health: noHealth,
+		health: createHealthPort(healthStore, { onWarning: (warning) => { healthWarning = warning; } }),
 	};
 
 	function refreshConfig(): void {
@@ -133,6 +136,9 @@ export default function (pi: ExtensionAPI) {
 		if (profileWarning) lines.push(`Warning: ${profileWarning}`);
 
 		const resolved = resolveCredentials(config.credentials, process.env);
+		const now = Date.now();
+		const healthRead = loadHealth(healthStore, now);
+		const cooldowns = describeCooldowns(healthRead.state, now);
 		lines.push("Providers:");
 		for (const provider of PROVIDERS) {
 			const credentials = resolved.filter((credential) => credential.provider === provider);
@@ -146,8 +152,11 @@ export default function (pi: ExtensionAPI) {
 				lines.push(`  - ${credential.alias}: ${credential.available ? "available" : "unavailable"}`);
 			}
 		}
+		if (cooldowns.length > 0) {
+			lines.push("Cooldowns:");
+			for (const cooldown of cooldowns) lines.push(`- ${cooldown}`);
+		}
 
-		const now = Date.now();
 		const { state, warning } = loadLedger(ledgerStore, now);
 		const session = summarizeEvents(state.events, { sessionId: ctx.sessionManager.getSessionId() });
 		lines.push(
@@ -174,7 +183,9 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const ledgerIssue = warning ?? ledgerWarning;
+		const healthIssue = healthRead.warning ?? healthWarning;
 		if (ledgerIssue) lines.push(`Warning: ${ledgerIssue}`);
+		if (healthIssue) lines.push(`Warning: ${healthIssue}`);
 		return lines.join("\n");
 	}
 
