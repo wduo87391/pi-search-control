@@ -22,10 +22,15 @@ export interface SearchProfile {
 	providers: Provider[];
 }
 
+export interface CredentialDeclaration {
+	alias: string;
+	env: string;
+}
+
 export interface SearchControlConfig {
 	defaultProfile: string;
 	profiles: Record<string, SearchProfile>;
-	apiKeys: Record<Provider, string[]>;
+	credentials: Record<Provider, CredentialDeclaration[]>;
 	search: SearchDefaults;
 	fetch: FetchDefaults;
 }
@@ -36,6 +41,7 @@ const DEFAULT_FETCH: FetchDefaults = { timeoutMs: 20_000, maxChars: 30_000 };
 const LEGACY_FIELDS = [
 	"provider",
 	"providers",
+	"apiKeys",
 	"exaApiKey",
 	"exaApiKeys",
 	"tavilyApiKey",
@@ -50,7 +56,7 @@ const LEGACY_FIELDS = [
 
 const NEW_FORMAT_HINT =
 	'{ "defaultProfile": "<name>", "profiles": { "<name>": { "providers": ["exa", "tavily", "brave"] } }, ' +
-	'"apiKeys": { "exa": [], "tavily": [], "brave": [] } }';
+	'"credentials": { "exa": [{ "alias": "<alias>", "env": "<ENV_VAR>" }] } }';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -60,20 +66,55 @@ function isProvider(value: unknown): value is Provider {
 	return typeof value === "string" && (PROVIDERS as readonly string[]).includes(value);
 }
 
-function normalizeKeys(value: unknown, provider: Provider): string[] {
-	if (value === undefined) return [];
-	if (!Array.isArray(value)) {
-		throw new Error(`Invalid apiKeys.${provider} in ${CONFIG_PATH}: expected an array of strings.`);
+function normalizeCredentials(value: unknown, sourcePath: string): Record<Provider, CredentialDeclaration[]> {
+	if (!isRecord(value)) {
+		throw new Error(`Missing credentials in ${sourcePath}. Expected ${NEW_FORMAT_HINT}.`);
 	}
-	const keys: string[] = [];
-	for (const item of value) {
-		if (typeof item !== "string") {
-			throw new Error(`Invalid apiKeys.${provider} entry in ${CONFIG_PATH}: expected strings only.`);
+
+	const credentials: Record<Provider, CredentialDeclaration[]> = { exa: [], tavily: [], brave: [] };
+	const aliasOwner = new Map<string, Provider>();
+
+	for (const key of Object.keys(value)) {
+		if (!isProvider(key)) {
+			throw new Error(
+				`Unknown provider "${key}" in credentials in ${sourcePath}: expected exa, tavily, or brave.`
+			);
 		}
-		const key = item.trim();
-		if (key && !keys.includes(key)) keys.push(key);
+		const declarations = value[key];
+		if (declarations === undefined) continue;
+		if (!Array.isArray(declarations)) {
+			throw new Error(
+				`Invalid credentials.${key} in ${sourcePath}: expected an array of { alias, env } objects.`
+			);
+		}
+		for (const declaration of declarations) {
+			if (!isRecord(declaration)) {
+				throw new Error(
+					`Invalid credentials.${key} entry in ${sourcePath}: expected an object with alias and env.`
+				);
+			}
+			const alias = typeof declaration.alias === "string" ? declaration.alias.trim() : "";
+			if (!alias) {
+				throw new Error(`Invalid credentials.${key} entry in ${sourcePath}: missing alias.`);
+			}
+			const env = typeof declaration.env === "string" ? declaration.env.trim() : "";
+			if (!env) {
+				throw new Error(
+					`Invalid credentials.${key} entry for alias "${alias}" in ${sourcePath}: missing env reference.`
+				);
+			}
+			const owner = aliasOwner.get(alias);
+			if (owner !== undefined) {
+				throw new Error(
+					`Duplicate credential alias "${alias}" in ${sourcePath}: already declared for ${owner}.`
+				);
+			}
+			aliasOwner.set(alias, key);
+			credentials[key].push({ alias, env });
+		}
 	}
-	return keys;
+
+	return credentials;
 }
 
 function normalizeNumber(value: unknown, fallback: number, name: string): number {
@@ -165,13 +206,6 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): SearchContr
 
 	assertNoLegacyFields(raw, sourcePath);
 
-	const apiKeysRaw = raw.apiKeys;
-	if (!isRecord(apiKeysRaw)) {
-		throw new Error(
-			`Missing apiKeys in ${sourcePath}. Expected { "apiKeys": { "exa": [], "tavily": [], "brave": [] } }.`
-		);
-	}
-
 	const profiles = normalizeProfiles(raw.profiles, sourcePath);
 	const searchRaw = isRecord(raw.search) ? raw.search : {};
 	const fetchRaw = isRecord(raw.fetch) ? raw.fetch : {};
@@ -179,11 +213,7 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): SearchContr
 	return {
 		defaultProfile: normalizeDefaultProfile(raw.defaultProfile, profiles, sourcePath),
 		profiles,
-		apiKeys: {
-			exa: normalizeKeys(apiKeysRaw.exa, "exa"),
-			tavily: normalizeKeys(apiKeysRaw.tavily, "tavily"),
-			brave: normalizeKeys(apiKeysRaw.brave, "brave"),
-		},
+		credentials: normalizeCredentials(raw.credentials, sourcePath),
 		search: {
 			// Respect user-configured value; provider APIs enforce their own caps.
 			numResults: normalizeNumber(searchRaw.numResults, DEFAULT_SEARCH.numResults, "search.numResults"),

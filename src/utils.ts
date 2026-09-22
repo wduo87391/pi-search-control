@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 export interface SearchResult {
 	title: string;
 	url: string;
@@ -15,10 +13,6 @@ export interface SearchOptions {
 	numResults: number;
 	timeoutMs: number;
 	signal?: AbortSignal;
-}
-
-export function keyId(provider: string, apiKey: string): string {
-	return `${provider}#${createHash("sha256").update(apiKey).digest("hex").slice(0, 8)}`;
 }
 
 export function requestSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
@@ -48,7 +42,7 @@ export function isAbortError(err: unknown): boolean {
 export function formatSearchMarkdown(query: string, provider: string, id: string, response: SearchResponse): string {
 	let output = `## Search results for: "${query}"\n\n`;
 	output += `Provider: ${provider}\n`;
-	output += `Key: ${id}\n\n`;
+	output += `Credential: ${id}\n\n`;
 	if (response.answer.trim()) {
 		output += `### Answer\n\n${response.answer.trim()}\n\n`;
 	}

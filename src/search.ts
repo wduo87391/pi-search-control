@@ -1,19 +1,20 @@
-import { CONFIG_PATH, type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
-import { formatSearchMarkdown, isAbortError, keyId, type SearchOptions, type SearchResponse } from "./utils.ts";
+import { type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { resolveCredentials, type ResolvedCredential } from "./credentials.ts";
+import { formatSearchMarkdown, isAbortError, type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
 import { searchExa } from "./providers/exa.ts";
 import { searchTavily } from "./providers/tavily.ts";
 
 export interface SearchTarget {
 	provider: Provider;
+	alias: string;
 	apiKey: string;
-	keyId: string;
 }
 
 export interface RoutedSearchResult {
 	query: string;
 	provider: Provider;
-	keyId: string;
+	alias: string;
 	answer: string;
 	results: SearchResponse["results"];
 	markdown: string;
@@ -21,20 +22,33 @@ export interface RoutedSearchResult {
 
 export interface FailedAttempt {
 	provider: Provider;
-	keyId: string;
+	alias: string;
 	error: string;
 }
 
-function providerTargets(config: SearchControlConfig, provider: Provider): SearchTarget[] {
-	return config.apiKeys[provider].map((apiKey) => ({
-		provider,
-		apiKey,
-		keyId: keyId(provider, apiKey),
-	}));
+/**
+ * Build the ordered attempt plan for a Search Profile from resolved credentials.
+ * Credentials that are unavailable in the environment are excluded so the plan
+ * never reaches for a key that is not there. The plan is identified by alias only.
+ */
+export function buildSearchPlan(profile: SearchProfile, credentials: ResolvedCredential[]): SearchTarget[] {
+	const byProvider = new Map<Provider, SearchTarget[]>();
+	for (const credential of credentials) {
+		if (!credential.available) continue;
+		const targets = byProvider.get(credential.provider) ?? [];
+		targets.push({ provider: credential.provider, alias: credential.alias, apiKey: credential.apiKey });
+		byProvider.set(credential.provider, targets);
+	}
+	return profile.providers.flatMap((provider) => byProvider.get(provider) ?? []);
 }
 
-export function buildSearchPlan(config: SearchControlConfig, profile: SearchProfile): SearchTarget[] {
-	return profile.providers.flatMap((provider) => providerTargets(config, provider));
+function noUsableCredentialsMessage(profile: SearchProfile, credentials: ResolvedCredential[]): string {
+	const declared = credentials.filter((credential) => profile.providers.includes(credential.provider));
+	const unavailable = declared.filter((credential) => !credential.available).map((credential) => credential.alias);
+	if (unavailable.length > 0) {
+		return `No available credentials for Search Profile "${profile.name}". Unavailable: ${unavailable.join(", ")}.`;
+	}
+	return `No credentials declared for Search Profile "${profile.name}" providers: ${profile.providers.join(", ")}.`;
 }
 
 async function searchWithTarget(target: SearchTarget, query: string, options: SearchOptions): Promise<SearchResponse> {
@@ -53,12 +67,10 @@ export async function searchOne(
 	profile: SearchProfile,
 	options: Partial<SearchOptions> = {},
 ): Promise<RoutedSearchResult & { attempts: FailedAttempt[] }> {
-	const plan = buildSearchPlan(config, profile);
+	const credentials = resolveCredentials(config.credentials, process.env);
+	const plan = buildSearchPlan(profile, credentials);
 	if (plan.length === 0) {
-		throw new Error(
-			`No API keys available for Search Profile "${profile.name}". ` +
-			`Check ${profile.providers.map((p) => `apiKeys.${p}`).join(", ")} in ${CONFIG_PATH}.`
-		);
+		throw new Error(noUsableCredentialsMessage(profile, credentials));
 	}
 
 	const attempts: FailedAttempt[] = [];
@@ -74,20 +86,20 @@ export async function searchOne(
 			return {
 				query,
 				provider: target.provider,
-				keyId: target.keyId,
+				alias: target.alias,
 				answer: response.answer,
 				results: response.results,
-				markdown: formatSearchMarkdown(query, target.provider, target.keyId, response),
+				markdown: formatSearchMarkdown(query, target.provider, target.alias, response),
 				attempts,
 			};
 		} catch (err) {
 			if (isAbortError(err)) throw err;
-			attempts.push({ provider: target.provider, keyId: target.keyId, error: errorMessage(err) });
+			attempts.push({ provider: target.provider, alias: target.alias, error: errorMessage(err) });
 		}
 	}
 
 	throw new Error(
 		`Search failed for all configured targets:\n` +
-		attempts.map((attempt) => `- ${attempt.provider} ${attempt.keyId}: ${attempt.error}`).join("\n")
+		attempts.map((attempt) => `- ${attempt.provider} ${attempt.alias}: ${attempt.error}`).join("\n")
 	);
 }

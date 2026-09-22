@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { resolveCredentials } from "./credentials.ts";
 import { fetchOne } from "./fetch.ts";
 import { searchOne, type FailedAttempt, type RoutedSearchResult } from "./search.ts";
 
@@ -83,6 +84,13 @@ export default function (pi: ExtensionAPI) {
 		const profile = currentConfig.profiles[name];
 		const order = profile ? profile.providers.join(">") : "unknown";
 		let text = `search: ${name} (${order})`;
+		if (profile) {
+			const resolved = resolveCredentials(currentConfig.credentials, process.env);
+			const degraded = profile.providers.filter(
+				(provider) => !resolved.some((credential) => credential.provider === provider && credential.available)
+			);
+			if (degraded.length > 0) text += ` | unavailable: ${degraded.join(",")}`;
+		}
 		if (profileWarning) text += ` | warn: ${profileWarning}`;
 		ctx.ui.setStatus(STATUS_KEY, text);
 	}
@@ -174,15 +182,15 @@ export default function (pi: ExtensionAPI) {
 				queryCount?: number;
 				successful?: number;
 				profileName?: string;
-				results?: Array<{ keyId?: string; sources?: unknown[]; error?: string }>;
+				results?: Array<{ alias?: string; sources?: unknown[]; error?: string }>;
 			};
 			if (isPartial) return new Text(theme.fg("accent", "searching..."), 0, 0);
 			const totalSources = details?.results?.reduce((sum, item) => sum + (Array.isArray(item.sources) ? item.sources.length : 0), 0) ?? 0;
-			const keys = [...new Set((details?.results ?? []).map((item) => item.keyId).filter((value): value is string => typeof value === "string"))];
+			const aliases = [...new Set((details?.results ?? []).map((item) => item.alias).filter((value): value is string => typeof value === "string"))];
 			const errors = (details?.results ?? []).filter((item) => item.error).length;
 			let line = theme.fg("success", `${details?.successful ?? 0}/${details?.queryCount ?? 0} queries, ${totalSources} sources`);
 			line += theme.fg("muted", ` | ${details?.profileName ?? "none"}`);
-			if (keys.length > 0) line += theme.fg("muted", ` | ${compactList(keys)}`);
+			if (aliases.length > 0) line += theme.fg("muted", ` | ${compactList(aliases)}`);
 			if (errors > 0) line += theme.fg("warning", ` | ${errors} errors`);
 			return new Text(line, 0, 0);
 		},
@@ -229,7 +237,7 @@ export default function (pi: ExtensionAPI) {
 						: {
 							query: result.query,
 							provider: result.provider,
-							keyId: result.keyId,
+							alias: result.alias,
 							answer: result.answer,
 							sources: result.results,
 							failedAttempts: result.attempts,

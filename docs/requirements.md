@@ -81,7 +81,9 @@ Exact retry intervals and error classifications remain implementation design dec
 
 ## Credentials and configuration
 
-Configuration is user-global JSONC under the Pi user configuration area.
+Configuration is user-global JSON under the Pi user configuration area.
+
+JSONC was the original choice so that comments could explain profiles, environment references, and quota periods. That rationale was withdrawn once the user's actual setup was inspected: the config file is a symlink to a sops-nix-rendered secret (`~/.pi/web-search.json -> ~/.config/sops-nix/secrets/rendered/pi-web-search.json`), so it is generated rather than hand-edited and comments would serve no purpose. Plain JSON also avoids a hand-rolled comment stripper.
 
 Each credential declaration MUST contain:
 
@@ -93,9 +95,12 @@ Each credential declaration MUST contain:
 
 Requirements:
 
-- Raw API keys MUST NOT be stored in JSONC, session entries, the usage ledger, tool results, status text, or logs.
+- Raw API keys MUST NOT be stored in the config file, session entries, the usage ledger, tool results, status text, or logs.
 - User-facing output MUST identify a credential by alias, not by key content or environment-variable name.
+- Credentials reach the process as environment variables. The user's setup renders secrets through sops-nix, so exporting those rendered values into the environment is a human wiring step outside this extension's scope.
 - Multiple credentials are assumed to be legitimately controlled by the user; bypassing provider account limits is not a project goal.
+
+Known tension, unresolved: the alias-only rule means a validation error cannot tell the user which environment variable to set, even though the user authored that mapping themselves. Revisit if it proves annoying in practice; the rule exists to keep the mapping out of shared or persisted output, which may not require suppressing it in an interactive error.
 - Configuration changes MUST take effect only through explicit `/search-reload` or process restart.
 - `/search-reload` MUST validate a complete candidate configuration before replacing the active one.
 - Failed reloads MUST preserve the last valid active configuration and report actionable validation errors.

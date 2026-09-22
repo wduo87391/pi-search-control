@@ -13,7 +13,7 @@ No curator UI, no browser cookie access, no Gemini/Perplexity, no video analysis
 flowchart LR
     Agent[Pi agent] --> Search[web_search]
     Agent --> Fetch[fetch]
-    Config[web-search.json] --> Router[Provider/key routing]
+    Config[web-search.json] --> Router[Provider/credential routing]
     Search --> Router
     Router --> Exa[Exa]
     Router --> Tavily[Tavily]
@@ -29,7 +29,6 @@ flowchart LR
 ```
 
 A Search Profile names an ordered list of providers. The `web_search` tool follows the active profile's provider order; failed targets fall through to the next target in the generated plan.
-
 ## Configuration
 
 `pi-search-control` reads **only** the new format at `~/.pi/web-search.json`:
@@ -41,10 +40,13 @@ A Search Profile names an ordered list of providers. The `web_search` tool follo
     "research": { "providers": ["exa", "tavily", "brave"] },
     "economy": { "providers": ["brave", "tavily"] }
   },
-  "apiKeys": {
-    "exa": ["exa-key-1"],
-    "tavily": ["tavily-key-1", "tavily-key-2"],
-    "brave": ["brave-key-1", "brave-key-2"]
+  "credentials": {
+    "exa": [{ "alias": "exa-main", "env": "EXA_API_KEY" }],
+    "tavily": [
+      { "alias": "tvly-work", "env": "TAVILY_API_KEY_WORK" },
+      { "alias": "tvly-personal", "env": "TAVILY_API_KEY" }
+    ],
+    "brave": [{ "alias": "brave-main", "env": "BRAVE_API_KEY" }]
   },
   "search": {
     "numResults": 5,
@@ -57,11 +59,11 @@ A Search Profile names an ordered list of providers. The `web_search` tool follo
 }
 ```
 
-`defaultProfile` is required and must name a key in `profiles`. Every profile must declare a non-empty `providers` array of `exa`, `tavily`, or `brave`.
+`defaultProfile` is required and must name a key in `profiles`. Every profile must declare a non-empty `providers` array of `exa`, `tavily`, or `brave`. Every credential declares a globally unique `alias` and the `env` variable that carries the key at runtime; no raw key is ever written to the config file. A declared but unset environment variable only makes that credential unavailable, which degrades its provider rather than failing the load. User-visible output names credentials by alias only, never by key content or environment-variable name.
 
-Legacy fields are intentionally rejected:
+Legacy fields are intentionally rejected, including the old `apiKeys` structure (use `credentials` instead):
 
-- `provider`, `providers`
+- `provider`, `providers`, `apiKeys`
 - `exaApiKey`, `exaApiKeys`
 - `tavilyApiKey`, `tavilyApiKeys`
 - `braveApiKey`, `braveApiKeys`
@@ -81,14 +83,13 @@ A Search Profile is a named, session-scoped policy. Its `providers` array is the
 }
 ```
 
-The `research` profile builds this target order (one target per key, in declared key order):
+The `research` profile builds this target order (one target per available credential, in declared credential order):
 
 ```text
-exa:exa1
-tavily:tvly1
-tavily:tvly2
-brave:brave1
-brave:brave2
+exa:exa-main
+tavily:tvly-work
+tavily:tvly-personal
+brave:brave-main
 ```
 
 New sessions start with `defaultProfile`. Use `/search-profile <name>` to switch the profile for the current session; with no argument in TUI mode it opens a selector. Resuming or navigating a session branch restores the profile selected on that branch.
@@ -114,7 +115,7 @@ or:
 }
 ```
 
-Provider, key, and result count are chosen by config only. The result includes a hashed `keyId` such as `tavily#12ab34cd` so you can verify balancing without leaking API keys.
+Provider, credential, and result count are chosen by config only. The result names the credential by its configured `alias` so you can verify balancing without leaking API keys.
 
 ### `fetch`
 
