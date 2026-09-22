@@ -255,6 +255,25 @@ test('a ledger port that returns a corrupt shape degrades to no attempt history'
   assert.equal(result.alias, 'exa-main');
 });
 
+test('a throwing health store never fails the search', async () => {
+  const { deps } = makeDeps({
+    search: async (target) => {
+      if (target.alias === 'exa-main') throw new Error('429 rate limit exceeded');
+      return okResponse();
+    },
+    health: {
+      penalties: () => { throw new Error('health read exploded'); },
+      record: () => { throw new Error('health write exploded'); }
+    }
+  });
+
+  const result = await orchestrateSearch(input(), deps);
+
+  assert.equal(result.provider, 'tavily');
+  assert.equal(result.alias, 'tvly-work');
+  assert.ok(!result.markdown.includes('health'), 'a health failure is not surfaced to the model');
+});
+
 test('total failure lists every attempted provider and alias with its category and no key material', async () => {
   const { deps } = makeDeps({
     search: async (target) => {

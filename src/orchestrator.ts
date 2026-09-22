@@ -249,6 +249,17 @@ function recordAccounting(deps: OrchestratorDeps, events: LedgerEvent[], at: num
 	}
 }
 
+function readHealthPenalties(deps: OrchestratorDeps, at: number): Record<string, PenaltyState> {
+	// Cooldown state is diagnostics: a read failure must never fail a search,
+	// so a throwing or corrupt port degrades to "no active penalties".
+	try {
+		return deps.health.penalties(at) ?? {};
+	} catch {
+		// Swallowed on purpose; the edge port reports warnings.
+		return {};
+	}
+}
+
 function recordCooldown(deps: OrchestratorDeps, failure: FailedAttempt, at: number): void {
 	// Cooldown state is diagnostics: a write failure must never fail a search.
 	try {
@@ -289,7 +300,7 @@ export async function orchestrateSearch(
 		// Threshold demotion never excludes; a cooling credential still wins and is
 		// excluded by the selector.
 		penalties: mergePenalties(
-			deps.health.penalties(at),
+			readHealthPenalties(deps, at),
 			thresholdPenalties(credentials, attemptsByAlias, at),
 		),
 	});
