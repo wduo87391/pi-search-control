@@ -169,6 +169,42 @@ test('/search-status reports the active profile, credential availability, and se
   assert.match(text, /This session: 0 Search Requests, 0 Provider Attempts \(0 succeeded, 0 failed\)/);
 });
 
+test('/search-status reports per-provider and per-alias attempt counts for each period', async () => {
+  writeConfig(VALID_CONFIG);
+  const ledgerDir = join(HOME, '.pi', 'search-control');
+  const ledgerPath = join(ledgerDir, 'ledger.json');
+  mkdirSync(ledgerDir, { recursive: true });
+  const now = Date.now();
+  writeFileSync(ledgerPath, JSON.stringify({
+    version: 1,
+    events: [
+      { kind: 'request', at: now, sessionId: 'sess-1', requestId: 'r1', profile: 'research' },
+      { kind: 'attempt', at: now, sessionId: 'sess-1', requestId: 'r1', provider: 'tavily', alias: 'tvly-main', outcome: 'success', units: 1, costUsd: 0, estimatorVersion: '1', estimatorDate: '2026-09-22' },
+      { kind: 'attempt', at: now, sessionId: 'sess-other', requestId: 'r2', provider: 'exa', alias: 'exa-main', outcome: 'failure', units: 1, costUsd: 0.007, estimatorVersion: '1', estimatorDate: '2026-09-22' }
+    ],
+    buckets: []
+  }));
+  try {
+    const { commands, ctx, last } = await boot();
+
+    await commands.get('search-status').handler('', ctx);
+
+    const text = last().message;
+    // Session grouping: only this session's attempt, grouped by provider and alias.
+    assert.match(text, /This session: 1 Search Requests, 1 Provider Attempts \(1 succeeded, 0 failed\)/);
+    assert.match(text, /  - tavily: 1 attempts \(1 ok, 0 fail\)/);
+    assert.match(text, /  credentials: tvly-main 1/);
+    // Today counts attempts from both sessions but requests only from known ones;
+    // the other-session exa attempt shows grouped.
+    assert.match(text, /Today: 1 requests, 2 attempts/);
+    assert.match(text, /  - exa: 1 attempts \(0 ok, 1 fail\)/);
+    // Estimates header no longer implies a consumed total.
+    assert.match(text, /Per-attempt estimates/);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test('/search-status marks a credential whose environment variable is missing as unavailable', async () => {
   writeConfig(VALID_CONFIG);
   const saved = process.env.WIRING_EXA_KEY;

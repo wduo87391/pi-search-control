@@ -13,6 +13,7 @@ import {
 	loadLedger,
 	summarizeEvents,
 	summarizePeriod,
+	type GroupCounts,
 } from "./ledger.ts";
 import { searchWithTarget } from "./search.ts";
 import { reloadActiveState, type ActiveSearchState } from "./reload.ts";
@@ -185,11 +186,14 @@ export default function (pi: ExtensionAPI) {
 			`This session: ${session.requests} Search Requests, ${session.attempts} Provider Attempts ` +
 			`(${session.success} succeeded, ${session.failure} failed)`
 		);
+		pushGroupedCounts(lines, session);
 
 		const daily = summarizePeriod(state.events, now, "daily");
 		const monthly = summarizePeriod(state.events, now, "monthly");
 		lines.push(`Today: ${daily.requests} requests, ${daily.attempts} attempts`);
+		pushGroupedCounts(lines, daily);
 		lines.push(`This month: ${monthly.requests} requests, ${monthly.attempts} attempts`);
+		pushGroupedCounts(lines, monthly);
 
 		const recentDaily = state.buckets
 			.filter((bucket) => bucket.granularity === "daily")
@@ -199,9 +203,11 @@ export default function (pi: ExtensionAPI) {
 			lines.push(`- ${bucket.period}: ${bucket.requests} requests, ${bucket.attempts} attempts`);
 		}
 
-		lines.push("Estimates (not provider-authoritative balances):");
+		lines.push("Per-attempt estimates (not provider-authoritative balances; not consumed totals):");
 		for (const provider of PROVIDERS) {
-			lines.push(`- ${provider}: ${formatEstimate(estimateAttempt(config.estimates[provider]))}`);
+			const period = monthly.byProvider[provider];
+			const consumed = period ? ` this month: ${period.attempts} attempts` : "";
+			lines.push(`- ${provider}: ${formatEstimate(estimateAttempt(config.estimates[provider]))}${consumed}`);
 		}
 
 		const ledgerIssue = warning ?? ledgerWarning;
@@ -221,6 +227,24 @@ export default function (pi: ExtensionAPI) {
 			throw new Error(`Search Profile "${name}" is not declared in profiles.`);
 		}
 		return profile;
+	}
+
+	/**
+	 * Append per-provider and per-alias attempt counts for a ledger summary.
+	 * Skips the block when the summary has no attempts. Pure formatting.
+	 */
+	function pushGroupedCounts(lines: string[], summary: { attempts: number; byProvider: Record<string, GroupCounts>; byAlias: Record<string, GroupCounts> }): void {
+		if (summary.attempts === 0) return;
+		for (const provider of PROVIDERS) {
+			const counts = summary.byProvider[provider];
+			if (!counts) continue;
+			lines.push(`  - ${provider}: ${counts.attempts} attempts (${counts.success} ok, ${counts.failure} fail)`);
+		}
+		const aliases = Object.keys(summary.byAlias).sort();
+		if (aliases.length > 0) {
+			const parts = aliases.map((alias) => `${alias} ${summary.byAlias[alias].attempts}`);
+			lines.push(`  credentials: ${parts.join(", ")}`);
+		}
 	}
 
 	function selectProfile(name: string, ctx: ExtensionContext): void {
