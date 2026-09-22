@@ -23,9 +23,27 @@ export interface SearchProfile {
 	providers: Provider[];
 }
 
+export type UsagePeriodKind = "calendar-day" | "calendar-month" | "rolling-days";
+
+/**
+ * A credential's active usage period: the window its local attempt count is
+ * measured over. `days` is required for `rolling-days` and rejected for the
+ * calendar kinds. An absent period means the free-tier default, calendar-month.
+ */
+export interface UsagePeriod {
+	kind: UsagePeriodKind;
+	days?: number;
+}
+
 export interface CredentialDeclaration {
 	alias: string;
 	env: string;
+	/**
+	 * Optional usage-period/reset definition. When absent the credential's active
+	 * usage period is calendar-month (the free-tier default); selection resolves
+	 * that via DEFAULT_USAGE_PERIOD in ./selection.ts.
+	 */
+	period?: UsagePeriod;
 }
 
 export interface SearchControlConfig {
@@ -117,11 +135,53 @@ function normalizeCredentials(value: unknown, sourcePath: string): Record<Provid
 				);
 			}
 			aliasOwner.set(alias, key);
-			credentials[key].push({ alias, env });
+			const period = normalizePeriod(declaration.period, alias, key, sourcePath);
+			const normalized: CredentialDeclaration = { alias, env };
+			if (period !== undefined) normalized.period = period;
+			credentials[key].push(normalized);
 		}
 	}
 
 	return credentials;
+}
+
+function normalizePeriod(
+	value: unknown,
+	alias: string,
+	provider: Provider,
+	sourcePath: string,
+): UsagePeriod | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		throw new Error(
+			`Invalid period for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			'expected an object with kind "calendar-day", "calendar-month", or "rolling-days".'
+		);
+	}
+	const kind = value.kind;
+	if (kind !== "calendar-day" && kind !== "calendar-month" && kind !== "rolling-days") {
+		throw new Error(
+			`Invalid period.kind for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			'expected "calendar-day", "calendar-month", or "rolling-days".'
+		);
+	}
+	if (kind === "rolling-days") {
+		const days = value.days;
+		if (typeof days !== "number" || !Number.isInteger(days) || days < 1) {
+			throw new Error(
+				`Invalid period.days for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+				'"rolling-days" requires a finite integer >= 1.'
+			);
+		}
+		return { kind, days };
+	}
+	if (value.days !== undefined) {
+		throw new Error(
+			`Invalid period.days for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			'only "rolling-days" may declare days.'
+		);
+	}
+	return { kind };
 }
 
 function normalizeEstimates(value: unknown, sourcePath: string): Record<Provider, EstimatorRule> {

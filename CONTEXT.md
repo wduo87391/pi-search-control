@@ -35,3 +35,7 @@ _Avoid_: Search, query
 **Usage ledger**:
 The control plane's local record of search requests, provider attempts, outcomes, and estimated consumption; it is not the provider's authoritative billing balance.
 _Avoid_: Exact quota, billing counter
+
+**Usage period**:
+The window over which a credential's local attempt count is measured for least-used routing: a UTC calendar day, a UTC calendar month, or a trailing window of N days. A credential that declares none defaults to a calendar month.
+_Avoid_: Quota, billing cycle
