@@ -2,3 +2,6 @@ node_modules/
 .env
 .DS_Store
 *.log
+
+# Local markdown issue tracker (see docs/agents/issue-tracker.md)
+.scratch/
