@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveEstimators, type EstimatorOverride, type EstimatorRule } from "./estimates.ts";
 
 export const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
@@ -31,6 +32,7 @@ export interface SearchControlConfig {
 	defaultProfile: string;
 	profiles: Record<string, SearchProfile>;
 	credentials: Record<Provider, CredentialDeclaration[]>;
+	estimates: Record<Provider, EstimatorRule>;
 	search: SearchDefaults;
 	fetch: FetchDefaults;
 }
@@ -67,8 +69,13 @@ function isProvider(value: unknown): value is Provider {
 }
 
 function normalizeCredentials(value: unknown, sourcePath: string): Record<Provider, CredentialDeclaration[]> {
+	// A missing credentials block degrades to "every credential unavailable"
+	// rather than a load failure, so the extension still loads with no credentials.
+	if (value === undefined) {
+		return { exa: [], tavily: [], brave: [] };
+	}
 	if (!isRecord(value)) {
-		throw new Error(`Missing credentials in ${sourcePath}. Expected ${NEW_FORMAT_HINT}.`);
+		throw new Error(`Invalid credentials in ${sourcePath}: expected an object keyed by provider.`);
 	}
 
 	const credentials: Record<Provider, CredentialDeclaration[]> = { exa: [], tavily: [], brave: [] };
@@ -115,6 +122,48 @@ function normalizeCredentials(value: unknown, sourcePath: string): Record<Provid
 	}
 
 	return credentials;
+}
+
+function normalizeEstimates(value: unknown, sourcePath: string): Record<Provider, EstimatorRule> {
+	if (value === undefined) return resolveEstimators();
+	if (!isRecord(value)) {
+		throw new Error(`Invalid estimates in ${sourcePath}: expected an object keyed by provider.`);
+	}
+	const overrides: Partial<Record<Provider, EstimatorOverride>> = {};
+	for (const key of Object.keys(value)) {
+		if (!isProvider(key)) {
+			throw new Error(
+				`Unknown provider "${key}" in estimates in ${sourcePath}: expected exa, tavily, or brave.`
+			);
+		}
+		const raw = value[key];
+		if (!isRecord(raw)) {
+			throw new Error(`Invalid estimates.${key} in ${sourcePath}: expected an object of rule overrides.`);
+		}
+		const override: EstimatorOverride = {};
+		for (const field of ["version", "date", "unit", "basis"] as const) {
+			const fieldValue = raw[field];
+			if (fieldValue === undefined) continue;
+			if (typeof fieldValue !== "string" || fieldValue.trim() === "") {
+				throw new Error(
+					`Invalid estimates.${key}.${field} in ${sourcePath}: expected a non-empty string.`
+				);
+			}
+			override[field] = fieldValue.trim();
+		}
+		for (const field of ["unitsPerAttempt", "costPerUnitUsd"] as const) {
+			const fieldValue = raw[field];
+			if (fieldValue === undefined) continue;
+			if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue) || fieldValue < 0) {
+				throw new Error(
+					`Invalid estimates.${key}.${field} in ${sourcePath}: expected a non-negative number.`
+				);
+			}
+			override[field] = fieldValue;
+		}
+		overrides[key] = override;
+	}
+	return resolveEstimators(overrides);
 }
 
 function normalizeNumber(value: unknown, fallback: number, name: string): number {
@@ -214,6 +263,7 @@ export function parseConfig(raw: unknown, sourcePath = CONFIG_PATH): SearchContr
 		defaultProfile: normalizeDefaultProfile(raw.defaultProfile, profiles, sourcePath),
 		profiles,
 		credentials: normalizeCredentials(raw.credentials, sourcePath),
+		estimates: normalizeEstimates(raw.estimates, sourcePath),
 		search: {
 			// Respect user-configured value; provider APIs enforce their own caps.
 			numResults: normalizeNumber(searchRaw.numResults, DEFAULT_SEARCH.numResults, "search.numResults"),

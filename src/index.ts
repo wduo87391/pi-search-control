@@ -1,10 +1,20 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { loadConfig, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { loadConfig, PROVIDERS, type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials } from "./credentials.ts";
+import { estimateAttempt, formatEstimate } from "./estimates.ts";
 import { fetchOne } from "./fetch.ts";
-import { searchOne, type FailedAttempt, type RoutedSearchResult } from "./search.ts";
+import {
+	createFileLedgerStore,
+	loadLedger,
+	recordLedgerEvents,
+	summarizeEvents,
+	summarizePeriod,
+	type LedgerEvent,
+} from "./ledger.ts";
+import { searchOne, SearchFailureError, type FailedAttempt, type RoutedSearchResult } from "./search.ts";
 
 function normalizeList(single: unknown, many: unknown): string[] {
 	const raw = Array.isArray(many) ? many : (typeof single === "string" ? [single] : []);
@@ -34,11 +44,59 @@ function compactList(items: string[], max = 4): string {
 const PROFILE_ENTRY = "search-profile";
 const STATUS_KEY = "search-profile";
 
+function buildLedgerEvents(
+	config: SearchControlConfig,
+	sessionId: string,
+	requestId: string,
+	profileName: string,
+	at: number,
+	failed: FailedAttempt[],
+	success: { provider: Provider; alias: string } | undefined,
+): LedgerEvent[] {
+	const events: LedgerEvent[] = [{ kind: "request", at, sessionId, requestId, profile: profileName }];
+	for (const attempt of failed) {
+		const estimate = estimateAttempt(config.estimates[attempt.provider]);
+		events.push({
+			kind: "attempt",
+			at,
+			sessionId,
+			requestId,
+			provider: attempt.provider,
+			alias: attempt.alias,
+			outcome: "failure",
+			errorCategory: attempt.errorCategory,
+			units: estimate.units,
+			costUsd: estimate.costUsd,
+			estimatorVersion: estimate.version,
+			estimatorDate: estimate.date,
+		});
+	}
+	if (success) {
+		const estimate = estimateAttempt(config.estimates[success.provider]);
+		events.push({
+			kind: "attempt",
+			at,
+			sessionId,
+			requestId,
+			provider: success.provider,
+			alias: success.alias,
+			outcome: "success",
+			units: estimate.units,
+			costUsd: estimate.costUsd,
+			estimatorVersion: estimate.version,
+			estimatorDate: estimate.date,
+		});
+	}
+	return events;
+}
+
 export default function (pi: ExtensionAPI) {
 	let currentConfig: SearchControlConfig | undefined;
 	let configError: string | undefined;
 	let activeProfileName: string | undefined;
 	let profileWarning: string | undefined;
+	let ledgerWarning: string | undefined;
+	const ledgerStore = createFileLedgerStore();
 
 	function refreshConfig(): void {
 		try {
@@ -93,6 +151,91 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (profileWarning) text += ` | warn: ${profileWarning}`;
 		ctx.ui.setStatus(STATUS_KEY, text);
+	}
+
+	function recordSearch(
+		ctx: ExtensionContext,
+		config: SearchControlConfig,
+		profile: SearchProfile,
+		requestId: string,
+		at: number,
+		failed: FailedAttempt[],
+		success: { provider: Provider; alias: string } | undefined,
+	): void {
+		try {
+			const events = buildLedgerEvents(
+				config,
+				ctx.sessionManager.getSessionId(),
+				requestId,
+				profile.name,
+				at,
+				failed,
+				success,
+			);
+			const { warning } = recordLedgerEvents(ledgerStore, events, at);
+			ledgerWarning = warning;
+		} catch (err) {
+			// The usage ledger is diagnostics: a write failure must never fail a search.
+			ledgerWarning = `Usage ledger write failed: ${err instanceof Error ? err.message : String(err)}`;
+		}
+	}
+
+	function formatSearchStatus(ctx: ExtensionContext): string {
+		if (!currentConfig) {
+			return `Search configuration unavailable: ${configError ?? "unknown error"}`;
+		}
+		const config = currentConfig;
+		const name = activeProfileName ?? config.defaultProfile;
+		const profile = config.profiles[name];
+		const lines: string[] = [];
+		lines.push(`Search Profile: ${name}`);
+		lines.push(`Provider order: ${profile ? profile.providers.join(" > ") : "unknown"}`);
+		if (profileWarning) lines.push(`Warning: ${profileWarning}`);
+
+		const resolved = resolveCredentials(config.credentials, process.env);
+		lines.push("Providers:");
+		for (const provider of PROVIDERS) {
+			const credentials = resolved.filter((credential) => credential.provider === provider);
+			const available = credentials.filter((credential) => credential.available).length;
+			const inProfile = profile?.providers.includes(provider) ?? false;
+			lines.push(
+				`- ${provider}${inProfile ? "" : " (not in this profile)"}: ` +
+				`${available}/${credentials.length} credentials available`
+			);
+			for (const credential of credentials) {
+				lines.push(`  - ${credential.alias}: ${credential.available ? "available" : "unavailable"}`);
+			}
+		}
+
+		const now = Date.now();
+		const { state, warning } = loadLedger(ledgerStore, now);
+		const session = summarizeEvents(state.events, { sessionId: ctx.sessionManager.getSessionId() });
+		lines.push(
+			`This session: ${session.requests} Search Requests, ${session.attempts} Provider Attempts ` +
+			`(${session.success} succeeded, ${session.failure} failed)`
+		);
+
+		const daily = summarizePeriod(state.events, now, "daily");
+		const monthly = summarizePeriod(state.events, now, "monthly");
+		lines.push(`Today: ${daily.requests} requests, ${daily.attempts} attempts`);
+		lines.push(`This month: ${monthly.requests} requests, ${monthly.attempts} attempts`);
+
+		const recentDaily = state.buckets
+			.filter((bucket) => bucket.granularity === "daily")
+			.sort((a, b) => a.period.localeCompare(b.period))
+			.slice(-5);
+		for (const bucket of recentDaily) {
+			lines.push(`- ${bucket.period}: ${bucket.requests} requests, ${bucket.attempts} attempts`);
+		}
+
+		lines.push("Estimates (not provider-authoritative balances):");
+		for (const provider of PROVIDERS) {
+			lines.push(`- ${provider}: ${formatEstimate(estimateAttempt(config.estimates[provider]))}`);
+		}
+
+		const ledgerIssue = warning ?? ledgerWarning;
+		if (ledgerIssue) lines.push(`Warning: ${ledgerIssue}`);
+		return lines.join("\n");
 	}
 
 	function resolveProfile(): SearchProfile {
@@ -152,6 +295,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("search-status", {
+		description: "Show search provider, credential, and usage status",
+		handler: async (_args, ctx) => {
+			if (!currentConfig) refreshConfig();
+			ctx.ui.notify(formatSearchStatus(ctx), "info");
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		refreshConfig();
 		restoreProfile(ctx);
@@ -194,7 +345,7 @@ export default function (pi: ExtensionAPI) {
 			if (errors > 0) line += theme.fg("warning", ` | ${errors} errors`);
 			return new Text(line, 0, 0);
 		},
-		async execute(_toolCallId, params, signal, onUpdate) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const queries = normalizeList(params.query, params.queries);
 			if (queries.length === 0) {
 				throw new Error("No query provided. Use query or queries.");
@@ -215,12 +366,21 @@ export default function (pi: ExtensionAPI) {
 					content: [{ type: "text", text: `Searching ${i + 1}/${queries.length}: ${query}` }],
 					details: { phase: "search", current: i + 1, total: queries.length, query },
 				});
+				const requestId = randomUUID();
+				const at = Date.now();
+				let failed: FailedAttempt[] = [];
+				let success: { provider: Provider; alias: string } | undefined;
 				try {
-					results.push(await searchOne(query, config, profile, { numResults, signal }));
+					const result = await searchOne(query, config, profile, { numResults, signal });
+					failed = result.attempts;
+					success = { provider: result.provider, alias: result.alias };
+					results.push(result);
 				} catch (err) {
+					if (err instanceof SearchFailureError) failed = err.attempts;
 					const message = err instanceof Error ? err.message : String(err);
 					results.push({ query, error: message });
 				}
+				recordSearch(ctx, config, profile, requestId, at, failed, success);
 			}
 
 			const successful = results.filter((result) => !("error" in result)).length;

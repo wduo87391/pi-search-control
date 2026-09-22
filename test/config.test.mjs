@@ -37,9 +37,46 @@ test('parseConfig defaults a provider without credential declarations to an empt
   assert.deepEqual(config.credentials.brave, []);
 });
 
-test('parseConfig rejects a missing credentials block', () => {
+test('parseConfig defaults a missing credentials block to every provider empty', () => {
   const { credentials, ...withoutCredentials } = base;
-  assert.throws(() => parseConfig(withoutCredentials, 'test.json'), /Missing credentials/);
+  const config = parseConfig(withoutCredentials, 'test.json');
+  assert.deepEqual(config.credentials, { exa: [], tavily: [], brave: [] });
+});
+
+test('parseConfig resolves built-in estimator rules with a version and date', () => {
+  const config = parseConfig(base, 'test.json');
+  assert.equal(config.estimates.exa.version, '1');
+  assert.equal(config.estimates.exa.date, '2026-09-22');
+  assert.equal(config.estimates.tavily.unit, 'credits');
+  assert.equal(config.estimates.brave.costPerUnitUsd, 0.005);
+});
+
+test('parseConfig lets an estimates block override a built-in rule', () => {
+  const config = parseConfig(
+    { ...base, estimates: { exa: { version: '2', date: '2026-10-01', unitsPerAttempt: 2, costPerUnitUsd: 0.009 } } },
+    'test.json'
+  );
+  assert.equal(config.estimates.exa.version, '2');
+  assert.equal(config.estimates.exa.date, '2026-10-01');
+  assert.equal(config.estimates.exa.unitsPerAttempt, 2);
+  assert.equal(config.estimates.exa.costPerUnitUsd, 0.009);
+  assert.equal(config.estimates.exa.provider, 'exa');
+  // Untouched rules keep their built-in values.
+  assert.equal(config.estimates.tavily.version, '1');
+});
+
+test('parseConfig rejects an unknown provider in estimates', () => {
+  assert.throws(
+    () => parseConfig({ ...base, estimates: { duckduckgo: { version: '1' } } }, 'test.json'),
+    /Unknown provider "duckduckgo" in estimates/
+  );
+});
+
+test('parseConfig rejects a negative estimator number', () => {
+  assert.throws(
+    () => parseConfig({ ...base, estimates: { exa: { unitsPerAttempt: -1 } } }, 'test.json'),
+    /estimates\.exa\.unitsPerAttempt.*non-negative/
+  );
 });
 
 test('parseConfig rejects an unknown defaultProfile', () => {

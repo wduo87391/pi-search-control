@@ -1,5 +1,6 @@
 import { type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials, type ResolvedCredential } from "./credentials.ts";
+import { classifyError, type ErrorCategory } from "./ledger.ts";
 import { formatSearchMarkdown, isAbortError, type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
 import { searchExa } from "./providers/exa.ts";
@@ -24,6 +25,25 @@ export interface FailedAttempt {
 	provider: Provider;
 	alias: string;
 	error: string;
+	errorCategory: ErrorCategory;
+}
+
+/**
+ * Thrown when every configured target failed. It carries the structured
+ * Provider Attempts so callers can account for them in the usage ledger without
+ * parsing the message.
+ */
+export class SearchFailureError extends Error {
+	readonly attempts: FailedAttempt[];
+
+	constructor(attempts: FailedAttempt[]) {
+		super(
+			`Search failed for all configured targets:\n` +
+			attempts.map((attempt) => `- ${attempt.provider} ${attempt.alias}: ${attempt.error}`).join("\n")
+		);
+		this.name = "SearchFailureError";
+		this.attempts = attempts;
+	}
 }
 
 /**
@@ -94,12 +114,14 @@ export async function searchOne(
 			};
 		} catch (err) {
 			if (isAbortError(err)) throw err;
-			attempts.push({ provider: target.provider, alias: target.alias, error: errorMessage(err) });
+			attempts.push({
+				provider: target.provider,
+				alias: target.alias,
+				error: errorMessage(err),
+				errorCategory: classifyError(err),
+			});
 		}
 	}
 
-	throw new Error(
-		`Search failed for all configured targets:\n` +
-		attempts.map((attempt) => `- ${attempt.provider} ${attempt.alias}: ${attempt.error}`).join("\n")
-	);
+	throw new SearchFailureError(attempts);
 }
