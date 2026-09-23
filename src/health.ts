@@ -15,6 +15,13 @@ export const DEFAULT_HEALTH_PATH = join(homedir(), ".pi", "search-control", "hea
 export const RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
 
 /**
+ * Cooldown applied after quota exhaustion (HTTP 402). A quota window is not
+ * necessarily short, but a five-minute pause is long enough to stop hammering
+ * an exhausted credential while still letting it recover within a session.
+ */
+export const QUOTA_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
  * Cooldown applied after a transient failure (timeout, service, network). Kept
  * short so a momentary blip cannot sideline an otherwise healthy credential.
  */
@@ -28,6 +35,7 @@ export const TRANSIENT_COOLDOWN_MS = 60 * 1000;
  */
 export const COOLDOWN_DURATIONS: Partial<Record<ErrorCategory, number>> = {
 	rate_limit: RATE_LIMIT_COOLDOWN_MS,
+	quota: QUOTA_COOLDOWN_MS,
 	timeout: TRANSIENT_COOLDOWN_MS,
 	service: TRANSIENT_COOLDOWN_MS,
 	network: TRANSIENT_COOLDOWN_MS,
@@ -68,7 +76,7 @@ export interface CooldownFailure {
 	errorCategory: ErrorCategory;
 }
 
-const ERROR_CATEGORIES: readonly ErrorCategory[] = ["auth", "rate_limit", "timeout", "service", "network", "unknown"];
+const ERROR_CATEGORIES: readonly ErrorCategory[] = ["auth", "rate_limit", "quota", "timeout", "service", "network", "unknown"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);

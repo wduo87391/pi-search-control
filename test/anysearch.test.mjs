@@ -5,8 +5,10 @@ import {
   ANYSEARCH_MAX_RESULTS,
   ANYSEARCH_MIN_RESULTS,
   clampAnySearchResults,
+  sanitizeRequestId,
   searchAnySearch
 } from '../src/providers/anysearch.ts';
+import { ProviderFailureError } from '../src/provider-failure.ts';
 import { searchWithTarget } from '../src/search.ts';
 import { normalizeResponse } from '../src/normalize.ts';
 import { formatSearchMarkdown } from '../src/utils.ts';
@@ -207,4 +209,84 @@ test('the shared search dispatcher routes an anysearch target to the AnySearch a
   assert.equal(calls[0].input, 'https://api.anysearch.com/v1/search');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer any-secret');
   assert.equal(response.results[0].url, 'https://go.dev/doc/go1.26');
+});
+
+// --- Sensitive error bodies -------------------------------------------------
+// Every non-2xx class carries a unique secret canary. The canary stands in for
+// the generated credentials a real 402 body can contain; it must never reach a
+// thrown message, structured field, ledger event, or health entry.
+
+const CANARY = 'CANARY-anysearch-error-body-4f7c9a2e';
+
+for (const [status, category] of [
+  [400, 'unknown'],
+  [401, 'auth'],
+  [402, 'quota'],
+  [403, 'auth'],
+  [429, 'rate_limit'],
+  [500, 'service'],
+  [503, 'service']
+]) {
+  test(`a ${status} response is reduced to allowlisted fields (${category}) and never exposes the body`, async (t) => {
+    stubFetch(t, () => new Response(
+      JSON.stringify({ code: status, message: CANARY, request_id: 'req-abc-123', data: { secret: CANARY } }),
+      { status, headers: { 'Content-Type': 'application/json' } }
+    ));
+
+    await assert.rejects(
+      () => searchAnySearch('q', 'key', options),
+      (err) => {
+        assert.ok(err instanceof ProviderFailureError, 'a structured provider failure is thrown');
+        assert.equal(err.status, status);
+        assert.equal(err.category, category);
+        assert.equal(err.requestId, 'req-abc-123');
+        assert.equal(err.message.includes(CANARY), false, `canary leaked into the message for ${status}`);
+        assert.equal(JSON.stringify({ status: err.status, category: err.category, requestId: err.requestId }).includes(CANARY), false);
+        return true;
+      }
+    );
+  });
+}
+
+test('a non-JSON error body yields no request ID and leaks nothing', async (t) => {
+  stubFetch(t, () => new Response(`<html>${CANARY}</html>`, { status: 402 }));
+
+  await assert.rejects(
+    () => searchAnySearch('q', 'key', options),
+    (err) => {
+      assert.ok(err instanceof ProviderFailureError);
+      assert.equal(err.status, 402);
+      assert.equal(err.category, 'quota');
+      assert.equal(err.requestId, undefined);
+      assert.equal(err.message.includes(CANARY), false);
+      return true;
+    }
+  );
+});
+
+test('a request_id that is not allowlisted is dropped rather than surfaced', async (t) => {
+  stubFetch(t, () => new Response(
+    JSON.stringify({ request_id: `evil ${CANARY} <script>alert(1)</script>` }),
+    { status: 402, headers: { 'Content-Type': 'application/json' } }
+  ));
+
+  await assert.rejects(
+    () => searchAnySearch('q', 'key', options),
+    (err) => {
+      assert.equal(err.requestId, undefined);
+      assert.equal(err.message.includes(CANARY), false);
+      assert.equal(err.message.includes('<script>'), false);
+      return true;
+    }
+  );
+});
+
+test('sanitizeRequestId keeps only the allowlisted request-ID shape', () => {
+  assert.equal(sanitizeRequestId('7d6f4e91-2a83-4c5b-9f10-6e8a3d27b541'), '7d6f4e91-2a83-4c5b-9f10-6e8a3d27b541');
+  assert.equal(sanitizeRequestId('  req-1  '), 'req-1');
+  assert.equal(sanitizeRequestId('has space'), undefined);
+  assert.equal(sanitizeRequestId('<script>'), undefined);
+  assert.equal(sanitizeRequestId('x'.repeat(129)), undefined);
+  assert.equal(sanitizeRequestId(42), undefined);
+  assert.equal(sanitizeRequestId(undefined), undefined);
 });

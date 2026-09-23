@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  QUOTA_COOLDOWN_MS,
   RATE_LIMIT_COOLDOWN_MS,
   TRANSIENT_COOLDOWN_MS,
   activeCooldowns,
@@ -98,4 +99,27 @@ test('parseHealthState rejects a foreign or malformed document', () => {
     () => parseHealthState({ version: 1, cooldowns: { 'exa-main': { category: 'nope', enteredAt: 1, until: 2 } } }),
     /invalid category/
   );
+});
+
+test('quota exhaustion enters a five-minute cooldown', () => {
+  assert.equal(QUOTA_COOLDOWN_MS, 5 * 60 * 1000);
+  const state = enterCooldowns(emptyHealth(), [{ alias: 'any-main', errorCategory: 'quota' }], NOW);
+  assert.equal(state.cooldowns['any-main'].category, 'quota');
+  assert.equal(state.cooldowns['any-main'].enteredAt, NOW);
+  assert.equal(state.cooldowns['any-main'].until, NOW + QUOTA_COOLDOWN_MS);
+  assert.deepEqual(penaltiesFromHealth(state, NOW), { 'any-main': 'cooling' });
+});
+
+test('a quota cooldown expires exactly at five minutes', () => {
+  const state = enterCooldowns(emptyHealth(), [{ alias: 'any-main', errorCategory: 'quota' }], NOW);
+  assert.ok(activeCooldowns(state, NOW + QUOTA_COOLDOWN_MS - 1)['any-main'], 'cooling just before expiry');
+  assert.deepEqual(activeCooldowns(state, NOW + QUOTA_COOLDOWN_MS), {}, 'available at expiry');
+});
+
+test('parseHealthState accepts the quota category', () => {
+  const parsed = parseHealthState({
+    version: 1,
+    cooldowns: { 'any-main': { category: 'quota', enteredAt: 1, until: 2 } }
+  });
+  assert.equal(parsed.cooldowns['any-main'].category, 'quota');
 });

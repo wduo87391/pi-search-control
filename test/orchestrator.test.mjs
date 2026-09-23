@@ -4,12 +4,16 @@ import { parseConfig } from '../src/config.ts';
 import { resolveCredentials } from '../src/credentials.ts';
 import { orchestrateBatch, orchestrateSearch, createHealthPort } from '../src/orchestrator.ts';
 import {
+  QUOTA_COOLDOWN_MS,
   RATE_LIMIT_COOLDOWN_MS,
   TRANSIENT_COOLDOWN_MS,
   activeCooldowns,
-  createMemoryHealthStore
+  createMemoryHealthStore,
+  emptyHealth,
+  enterCooldowns
 } from '../src/health.ts';
 import { createThresholdWarner } from '../src/thresholds.ts';
+import { ProviderFailureError } from '../src/provider-failure.ts';
 
 const NOW = Date.UTC(2026, 9, 20, 12, 0, 0); // 2026-10-20T12:00:00Z
 
@@ -739,4 +743,112 @@ test('a profile that omits anysearch never attempts an anysearch credential', as
 
   assert.equal(result.provider, 'exa');
   assert.deepEqual(calls, ['exa'], 'the configured anysearch credential is never attempted');
+});
+
+// --- AnySearch quota safety and fallback (ticket 02) ---
+
+const QUOTA_CANARY = 'CANARY-anysearch-402-body-7b1e5c';
+
+const quotaConfig = parseConfig(
+  {
+    defaultProfile: 'anyfirst',
+    profiles: { anyfirst: { providers: ['anysearch', 'exa'] } },
+    credentials: {
+      anysearch: [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }],
+      exa: [{ alias: 'exa-main', env: 'EXA_API_KEY' }]
+    }
+  },
+  'test.json'
+);
+const quotaProfile = { name: 'anyfirst', providers: ['anysearch', 'exa'] };
+const quotaEnv = { ANYSEARCH_API_KEY: 'any-secret', EXA_API_KEY: 'exa-secret' };
+
+function quotaDeps(overrides = {}) {
+  return makeDeps({
+    resolveCredentials: (cfg) => resolveCredentials(cfg.credentials, quotaEnv),
+    ...overrides
+  });
+}
+
+test('an AnySearch 402 records quota, cools the alias, and falls back to the next route in one request', async () => {
+  const calls = [];
+  const healthStore = createMemoryHealthStore();
+  const { deps, recorded } = quotaDeps({
+    health: createHealthPort(healthStore),
+    search: async (target) => {
+      calls.push(target.alias);
+      if (target.provider === 'anysearch') {
+        // The adapter's raw body never escapes; the structured error carries
+        // only the safe request ID.
+        throw new ProviderFailureError({ provider: 'anysearch', status: 402, requestId: 'req-402' });
+      }
+      return okResponse();
+    }
+  });
+
+  const result = await orchestrateSearch(
+    input({ config: quotaConfig, profile: quotaProfile }),
+    deps
+  );
+
+  assert.deepEqual(calls, ['any-main', 'exa-main'], 'falls back within the same Search Request');
+  assert.equal(result.provider, 'exa');
+  assert.deepEqual(result.attempts, [
+    { provider: 'anysearch', alias: 'any-main', error: 'anysearch request failed with HTTP 402 (quota) [request req-402]', errorCategory: 'quota' }
+  ]);
+
+  const anyAttempt = recorded.find((event) => event.kind === 'attempt' && event.provider === 'anysearch');
+  assert.equal(anyAttempt.outcome, 'failure');
+  assert.equal(anyAttempt.errorCategory, 'quota');
+  assert.equal(anyAttempt.units, 1);
+  const exaAttempt = recorded.find((event) => event.kind === 'attempt' && event.provider === 'exa');
+  assert.equal(exaAttempt.outcome, 'success');
+
+  const state = healthStore.read().state;
+  assert.equal(state.cooldowns['any-main'].category, 'quota');
+  assert.equal(state.cooldowns['any-main'].until, NOW + QUOTA_COOLDOWN_MS);
+
+  // No surface may carry the raw body canary.
+  assert.equal(JSON.stringify(result.attempts).includes(QUOTA_CANARY), false);
+  assert.equal(JSON.stringify(recorded).includes(QUOTA_CANARY), false);
+  assert.equal(JSON.stringify(state).includes(QUOTA_CANARY), false);
+});
+
+test('a quota-cooling AnySearch alias is excluded until exactly five minutes elapse, then eligible again', async () => {
+  const healthStore = createMemoryHealthStore(
+    enterCooldowns(emptyHealth(), [{ alias: 'any-main', errorCategory: 'quota' }], NOW)
+  );
+
+  async function callsAt(now) {
+    const calls = [];
+    const { deps } = quotaDeps({
+      now: () => now,
+      health: createHealthPort(healthStore),
+      search: async (target) => {
+        calls.push(target.alias);
+        return okResponse();
+      }
+    });
+    await orchestrateSearch(input({ config: quotaConfig, profile: quotaProfile }), deps);
+    return calls;
+  }
+
+  assert.deepEqual(await callsAt(NOW), ['exa-main'], 'cooling immediately after the 402');
+  assert.deepEqual(await callsAt(NOW + QUOTA_COOLDOWN_MS - 1), ['exa-main'], 'still cooling one ms before expiry');
+  assert.deepEqual(await callsAt(NOW + QUOTA_COOLDOWN_MS), ['any-main'], 'eligible at exactly five minutes');
+});
+
+test('only a quota failure enters the five-minute window; auth failures still do not cool', async () => {
+  const healthStore = createMemoryHealthStore();
+  const { deps } = quotaDeps({
+    health: createHealthPort(healthStore),
+    search: async () => {
+      throw new ProviderFailureError({ provider: 'anysearch', status: 401 });
+    }
+  });
+
+  await assert.rejects(() => orchestrateSearch(input({ config: quotaConfig, profile: quotaProfile }), deps));
+
+  const state = healthStore.read().state;
+  assert.deepEqual(state.cooldowns, {}, 'an auth failure is a configuration problem, not a cooldown');
 });

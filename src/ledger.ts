@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { PROVIDERS, type Provider } from "./config.ts";
+import { ProviderFailureError } from "./provider-failure.ts";
 
 /** Per-attempt detail older than this is folded into aggregates and dropped. */
 export const DETAIL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -10,7 +11,7 @@ export const LEDGER_VERSION = 1;
 
 export const DEFAULT_LEDGER_PATH = join(homedir(), ".pi", "search-control", "ledger.json");
 
-export type ErrorCategory = "auth" | "rate_limit" | "timeout" | "service" | "network" | "unknown";
+export type ErrorCategory = "auth" | "rate_limit" | "quota" | "timeout" | "service" | "network" | "unknown";
 export type AttemptOutcome = "success" | "failure";
 export type Granularity = "daily" | "monthly";
 
@@ -112,7 +113,7 @@ function requireNumber(value: unknown, name: string): number {
 	return value;
 }
 
-const ERROR_CATEGORIES: readonly ErrorCategory[] = ["auth", "rate_limit", "timeout", "service", "network", "unknown"];
+const ERROR_CATEGORIES: readonly ErrorCategory[] = ["auth", "rate_limit", "quota", "timeout", "service", "network", "unknown"];
 
 /**
  * Classify a provider failure into a coarse category for the ledger. Deliberately
@@ -120,9 +121,13 @@ const ERROR_CATEGORIES: readonly ErrorCategory[] = ["auth", "rate_limit", "timeo
  * credential. Pure.
  */
 export function classifyError(error: unknown): ErrorCategory {
+	// A structured provider failure already knows its category; never re-derive
+	// it from text, which could disagree or be attacker-controlled.
+	if (error instanceof ProviderFailureError) return error.category;
 	const name = error instanceof Error ? error.name : "";
 	const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
 	if (name === "TimeoutError" || message.includes("timeout") || message.includes("timed out")) return "timeout";
+	if (message.includes("402") || message.includes("quota") || message.includes("payment required")) return "quota";
 	if (message.includes("429") || message.includes("rate limit") || message.includes("too many requests")) {
 		return "rate_limit";
 	}

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DETAIL_RETENTION_MS,
+  classifyError,
   createFileLedgerStore,
   createMemoryLedgerStore,
   emptyLedger,
@@ -16,6 +17,7 @@ import {
   summarizeEvents,
   summarizePeriod
 } from '../src/ledger.ts';
+import { ProviderFailureError } from '../src/provider-failure.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 20, 12, 0, 0); // 2026-10-20T12:00:00Z
@@ -214,4 +216,35 @@ test('the ledger event shape carries no query field', () => {
   const event = attempt(NOW);
   assert.equal('query' in event, false);
   assert.equal('queries' in event, false);
+});
+
+test('the ledger accepts and round-trips the quota error category', () => {
+  const state = parseLedgerState({
+    version: 1,
+    events: [attempt(NOW, { provider: 'anysearch', alias: 'any-main', errorCategory: 'quota' })],
+    buckets: []
+  });
+  assert.equal(state.events[0].errorCategory, 'quota');
+  assert.equal(summarizeEvents(state.events).failure, 1);
+});
+
+test('the ledger still rejects an unknown error category', () => {
+  assert.throws(
+    () => parseLedgerState({ version: 1, events: [attempt(NOW, { errorCategory: 'mystery' })], buckets: [] }),
+    /invalid errorCategory/
+  );
+});
+
+test('a structured provider failure keeps its own category instead of re-deriving from text', () => {
+  assert.equal(classifyError(new ProviderFailureError({ provider: 'anysearch', status: 402 })), 'quota');
+  assert.equal(classifyError(new ProviderFailureError({ provider: 'anysearch', status: 401 })), 'auth');
+  assert.equal(classifyError(new ProviderFailureError({ provider: 'anysearch', status: 403 })), 'auth');
+  assert.equal(classifyError(new ProviderFailureError({ provider: 'anysearch', status: 429 })), 'rate_limit');
+  assert.equal(classifyError(new ProviderFailureError({ provider: 'anysearch', status: 503 })), 'service');
+  assert.equal(classifyError(new ProviderFailureError({ provider: 'anysearch', status: 418 })), 'unknown');
+});
+
+test('a quota failure is never misclassified by response-body text', () => {
+  const err = new ProviderFailureError({ provider: 'anysearch', status: 402, requestId: 'req-1' });
+  assert.equal(classifyError(err), 'quota');
 });
