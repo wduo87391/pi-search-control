@@ -7,6 +7,16 @@ Lightweight web access package for Pi. It registers only two tools:
 
 No curator UI, no browser cookie access, no Gemini/Perplexity, no video analysis, no background servers, no storage cache, and no package runtime dependencies.
 
+## Features
+
+- **Search Profiles** — named, session-scoped provider policies; switch with `/search-profile`, restored per session branch
+- **Provider Pins** — `/search-provider <provider>` pins one provider for the session branch; `/search-provider reset` restores profile routing
+- **Status panel** — `/search-status` opens an interactive TUI panel (TUI mode) with per-provider pages: cooldowns, thresholds, allowance estimates, attempt/success/failure counts
+- **Validate-then-swap reload** — `/search-reload` applies config changes only after validation
+- **Credential hygiene** — env-backed keys only, aliases in all user-visible output, error bodies treated as sensitive
+- **Thresholds & allowances** — per-period attempt thresholds demote credentials; allowances estimate remaining usage (AnySearch ships a 1,000/day provider default)
+- **Profile guidance** — optional per-profile `guidance` string appended after the non-replaceable built-in policy guidance
+
 ## Architecture
 
 ```mermaid

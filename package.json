@@ -1,8 +1,16 @@
 {
   "name": "pi-search-control",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Lightweight web_search and fetch tools for Pi with named Search Profiles routing Exa, Tavily, Brave, and AnySearch.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wduo87391/pi-search-control.git"
+  },
+  "homepage": "https://github.com/wduo87391/pi-search-control#readme",
+  "bugs": {
+    "url": "https://github.com/wduo87391/pi-search-control/issues"
+  },
   "scripts": {
     "check": "node --input-type=module -e \"await import('./src/config.ts'); await import('./src/search.ts'); await import('./src/fetch.ts'); await import('./src/index.ts')\"",
     "test": "node --test",
