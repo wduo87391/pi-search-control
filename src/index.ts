@@ -11,6 +11,7 @@ import { createFileLedgerStore, loadLedger } from "./ledger.ts";
 import { searchWithTarget } from "./search.ts";
 import { reloadActiveState, type ActiveSearchState } from "./reload.ts";
 import { buildStatusSnapshot, formatStatusText } from "./status.ts";
+import { StatusPanel } from "./status-panel.ts";
 import { createThresholdWarner } from "./thresholds.ts";
 import {
 	createHealthPort,
@@ -233,7 +234,22 @@ export default function (pi: ExtensionAPI) {
 			// Print and JSON modes have no observable command output and Pi does not
 			// execute interactive commands through their prompts; do not claim support.
 			if (!ctx.hasUI) return;
-			ctx.ui.notify(formatStatusText(collectStatus(ctx)), "info");
+			const snapshot = collectStatus(ctx);
+			if (ctx.mode === "tui") {
+				// The temporary panel renders the same snapshot as the RPC text path.
+				// It appends no session entry: opening, navigating, and closing it leave
+				// the transcript untouched.
+				await ctx.ui.custom((tui, theme, _keybindings, done) =>
+					new StatusPanel({
+						snapshot,
+						theme,
+						onClose: () => done(undefined),
+						requestRender: () => tui.requestRender(),
+					}),
+				);
+				return;
+			}
+			ctx.ui.notify(formatStatusText(snapshot), "info");
 		},
 	});
 

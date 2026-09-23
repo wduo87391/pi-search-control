@@ -60,13 +60,24 @@ function makePi() {
 function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = null, sessionStartedAt = null } = {}) {
   const notifications = [];
   const statuses = new Map();
+  const customCalls = [];
+  const renders = [];
   const ctx = {
     mode,
     hasUI: mode === 'tui' || mode === 'rpc',
     ui: {
       notify: (message, level) => notifications.push({ message, level }),
       setStatus: (key, text) => statuses.set(key, text),
-      select: async () => select
+      select: async () => select,
+      // Records the factory and the component it builds, then resolves as if the
+      // user closed it immediately. No live terminal is involved.
+      custom: async (factory, options) => {
+        const tui = { requestRender: () => renders.push(true) };
+        const theme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
+        const component = factory(tui, theme, {}, () => {});
+        customCalls.push({ component, options, tui });
+        return undefined;
+      }
     },
     sessionManager: {
       getBranch: () => branch,
@@ -74,7 +85,7 @@ function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = n
       getHeader: () => (sessionStartedAt === null ? undefined : { timestamp: new Date(sessionStartedAt).toISOString() })
     }
   };
-  return { ctx, notifications, statuses, last: () => notifications.at(-1) };
+  return { ctx, notifications, statuses, customCalls, renders, last: () => notifications.at(-1) };
 }
 
 /** Boot a fresh extension instance (state lives in the factory closure). */
@@ -357,9 +368,60 @@ test('/search-status in print and JSON modes performs no UI operation', async ()
   const { commands } = await boot();
 
   for (const mode of ['print', 'json']) {
-    const { ctx, notifications } = makeCtx({ mode });
+    const { ctx, notifications, customCalls } = makeCtx({ mode });
     await commands.get('search-status').handler('', ctx);
     assert.equal(notifications.length, 0, `${mode} mode emits no notification`);
+    assert.equal(customCalls.length, 0, `${mode} mode opens no custom component`);
+  }
+});
+
+test('/search-status in TUI mode opens a non-overlay panel and sends no notification', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, entries, ctx, notifications, customCalls } = await boot({ mode: 'tui' });
+
+  await commands.get('search-status').handler('', ctx);
+
+  assert.equal(notifications.length, 0, 'the long status notification is gone in TUI mode');
+  assert.deepEqual(entries, [], 'opening the panel appends no session entry');
+  assert.equal(customCalls.length, 1, 'one custom component is opened');
+  assert.equal(customCalls[0].options?.overlay, undefined, 'the panel is not an overlay');
+  const component = customCalls[0].component;
+  assert.equal(typeof component.render, 'function');
+  assert.equal(typeof component.handleInput, 'function');
+  assert.equal(typeof component.invalidate, 'function');
+
+  const text = component.render(80).join('\n');
+  assert.match(text, /Search Profile: research/);
+  assert.match(text, /Route: usable/);
+  assert.match(text, /Overview/);
+});
+
+test('/search-status in RPC mode notifies text from the same snapshot and opens no component', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, ctx, last, customCalls } = await boot({ mode: 'rpc' });
+
+  await commands.get('search-status').handler('', ctx);
+
+  assert.equal(customCalls.length, 0, 'RPC mode does not open the TUI panel');
+  assert.equal(last().level, 'info');
+  assert.match(last().message, /Search Profile: research/);
+  assert.match(last().message, /Route: usable/);
+});
+
+test('/search-status in TUI mode opens a configuration-error panel without inventing credential state', async () => {
+  writeConfig({ nonsense: true });
+  try {
+    const { commands, ctx, notifications, customCalls } = await boot({ mode: 'tui' });
+
+    await commands.get('search-status').handler('', ctx);
+
+    assert.equal(notifications.length, 0);
+    assert.equal(customCalls.length, 1);
+    const text = customCalls[0].component.render(120).join('\n');
+    assert.match(text, /Route: No usable route/);
+    assert.match(text, /Configuration unavailable/);
+  } finally {
+    writeConfig(VALID_CONFIG);
   }
 });
 
