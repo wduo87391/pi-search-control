@@ -5,8 +5,11 @@ import { resolveEstimators, type EstimatorOverride, type EstimatorRule } from ".
 
 export const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
-export const PROVIDERS = ["exa", "tavily", "brave"] as const;
+export const PROVIDERS = ["exa", "tavily", "brave", "anysearch"] as const;
 export type Provider = typeof PROVIDERS[number];
+
+/** Human-readable provider list for configuration error messages and hints. */
+const PROVIDER_LIST = "exa, tavily, brave, or anysearch";
 
 export interface SearchDefaults {
 	numResults: number;
@@ -40,6 +43,13 @@ export interface UsagePeriod {
 	days?: number;
 }
 
+export interface CredentialAllowance {
+	/** Estimated request units the credential may consume in its allowance period. */
+	units: number;
+	/** The explicit window the allowance units apply to. */
+	period: UsagePeriod;
+}
+
 export interface CredentialDeclaration {
 	alias: string;
 	env: string;
@@ -56,6 +66,12 @@ export interface CredentialDeclaration {
 	 * threshold behaviour at all for this credential.
 	 */
 	threshold?: number;
+	/**
+	 * Optional Credential Allowance Estimate: an estimated unit count over an
+	 * explicit period, used only to estimate remaining usage. It never affects
+	 * routing and is distinct from `threshold`.
+	 */
+	allowance?: CredentialAllowance;
 }
 
 export interface SearchControlConfig {
@@ -87,7 +103,7 @@ const LEGACY_FIELDS = [
 ];
 
 const NEW_FORMAT_HINT =
-	'{ "defaultProfile": "<name>", "profiles": { "<name>": { "providers": ["exa", "tavily", "brave"] } }, ' +
+	'{ "defaultProfile": "<name>", "profiles": { "<name>": { "providers": ["exa", "tavily", "brave", "anysearch"] } }, ' +
 	'"credentials": { "exa": [{ "alias": "<alias>", "env": "<ENV_VAR>" }] } }';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -102,19 +118,19 @@ function normalizeCredentials(value: unknown, sourcePath: string): Record<Provid
 	// A missing credentials block degrades to "every credential unavailable"
 	// rather than a load failure, so the extension still loads with no credentials.
 	if (value === undefined) {
-		return { exa: [], tavily: [], brave: [] };
+		return { exa: [], tavily: [], brave: [], anysearch: [] };
 	}
 	if (!isRecord(value)) {
 		throw new Error(`Invalid credentials in ${sourcePath}: expected an object keyed by provider.`);
 	}
 
-	const credentials: Record<Provider, CredentialDeclaration[]> = { exa: [], tavily: [], brave: [] };
+	const credentials: Record<Provider, CredentialDeclaration[]> = { exa: [], tavily: [], brave: [], anysearch: [] };
 	const aliasOwner = new Map<string, Provider>();
 
 	for (const key of Object.keys(value)) {
 		if (!isProvider(key)) {
 			throw new Error(
-				`Unknown provider "${key}" in credentials in ${sourcePath}: expected exa, tavily, or brave.`
+				`Unknown provider "${key}" in credentials in ${sourcePath}: expected ${PROVIDER_LIST}.`
 			);
 		}
 		const declarations = value[key];
@@ -149,9 +165,11 @@ function normalizeCredentials(value: unknown, sourcePath: string): Record<Provid
 			aliasOwner.set(alias, key);
 			const period = normalizePeriod(declaration.period, alias, key, sourcePath);
 			const threshold = normalizeThreshold(declaration.threshold, alias, key, sourcePath);
+			const allowance = normalizeAllowance(declaration.allowance, alias, key, sourcePath);
 			const normalized: CredentialDeclaration = { alias, env };
 			if (period !== undefined) normalized.period = period;
 			if (threshold !== undefined) normalized.threshold = threshold;
+			if (allowance !== undefined) normalized.allowance = allowance;
 			credentials[key].push(normalized);
 		}
 	}
@@ -164,18 +182,19 @@ function normalizePeriod(
 	alias: string,
 	provider: Provider,
 	sourcePath: string,
+	field = "period",
 ): UsagePeriod | undefined {
 	if (value === undefined) return undefined;
 	if (!isRecord(value)) {
 		throw new Error(
-			`Invalid period for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			`Invalid ${field} for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
 			'expected an object with kind "calendar-day", "calendar-month", or "rolling-days".'
 		);
 	}
 	const kind = value.kind;
 	if (kind !== "calendar-day" && kind !== "calendar-month" && kind !== "rolling-days") {
 		throw new Error(
-			`Invalid period.kind for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			`Invalid ${field}.kind for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
 			'expected "calendar-day", "calendar-month", or "rolling-days".'
 		);
 	}
@@ -183,7 +202,7 @@ function normalizePeriod(
 		const days = value.days;
 		if (typeof days !== "number" || !Number.isInteger(days) || days < 1) {
 			throw new Error(
-				`Invalid period.days for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+				`Invalid ${field}.days for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
 				'"rolling-days" requires a finite integer >= 1.'
 			);
 		}
@@ -191,7 +210,7 @@ function normalizePeriod(
 	}
 	if (value.days !== undefined) {
 		throw new Error(
-			`Invalid period.days for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			`Invalid ${field}.days for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
 			'only "rolling-days" may declare days.'
 		);
 	}
@@ -214,6 +233,36 @@ function normalizeThreshold(
 	return value;
 }
 
+function normalizeAllowance(
+	value: unknown,
+	alias: string,
+	provider: Provider,
+	sourcePath: string,
+): CredentialAllowance | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		throw new Error(
+			`Invalid allowance for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			"expected an object with units and period."
+		);
+	}
+	const units = value.units;
+	if (typeof units !== "number" || !Number.isFinite(units) || !Number.isInteger(units) || units < 1) {
+		throw new Error(
+			`Invalid allowance.units for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			"expected a finite integer >= 1."
+		);
+	}
+	const period = normalizePeriod(value.period, alias, provider, sourcePath, "allowance.period");
+	if (period === undefined) {
+		throw new Error(
+			`Invalid allowance for credential "${alias}" in credentials.${provider} in ${sourcePath}: ` +
+			"expected an explicit period."
+		);
+	}
+	return { units, period };
+}
+
 function normalizeEstimates(value: unknown, sourcePath: string): Record<Provider, EstimatorRule> {
 	if (value === undefined) return resolveEstimators();
 	if (!isRecord(value)) {
@@ -223,7 +272,7 @@ function normalizeEstimates(value: unknown, sourcePath: string): Record<Provider
 	for (const key of Object.keys(value)) {
 		if (!isProvider(key)) {
 			throw new Error(
-				`Unknown provider "${key}" in estimates in ${sourcePath}: expected exa, tavily, or brave.`
+				`Unknown provider "${key}" in estimates in ${sourcePath}: expected ${PROVIDER_LIST}.`
 			);
 		}
 		const raw = value[key];
@@ -282,7 +331,7 @@ function normalizeProfileProviders(value: unknown, profileName: string, sourcePa
 	if (!Array.isArray(value) || value.length === 0) {
 		throw new Error(
 			`Invalid profiles.${profileName}.providers in ${sourcePath}: ` +
-			"expected a non-empty array of exa, tavily, or brave."
+			`expected a non-empty array of ${PROVIDER_LIST}.`
 		);
 	}
 	const providers: Provider[] = [];
@@ -290,7 +339,7 @@ function normalizeProfileProviders(value: unknown, profileName: string, sourcePa
 		if (!isProvider(item)) {
 			throw new Error(
 				`Invalid provider ${JSON.stringify(item)} in profiles.${profileName}.providers in ${sourcePath}: ` +
-				"expected exa, tavily, or brave."
+				`expected ${PROVIDER_LIST}.`
 			);
 		}
 		if (!providers.includes(item)) providers.push(item);

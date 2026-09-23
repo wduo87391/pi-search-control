@@ -7,6 +7,7 @@ import { type SearchOptions, type SearchResponse } from "./utils.ts";
 import { searchBrave } from "./providers/brave.ts";
 import { searchExa } from "./providers/exa.ts";
 import { searchTavily } from "./providers/tavily.ts";
+import { searchAnySearch } from "./providers/anysearch.ts";
 
 export interface SearchTarget {
 	provider: Provider;
@@ -137,5 +138,6 @@ export async function searchWithTarget(
 ): Promise<SearchResponse> {
 	if (target.provider === "exa") return searchExa(query, target.apiKey, options);
 	if (target.provider === "tavily") return searchTavily(query, target.apiKey, options);
+	if (target.provider === "anysearch") return searchAnySearch(query, target.apiKey, options);
 	return searchBrave(query, target.apiKey, options);
 }

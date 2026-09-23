@@ -15,6 +15,7 @@ const CONFIG_PATH = join(HOME, '.pi', 'web-search.json');
 process.env.WIRING_EXA_KEY = 'exa-secret';
 process.env.WIRING_TAVILY_KEY = 'tavily-secret';
 process.env.WIRING_BRAVE_KEY = 'brave-secret';
+process.env.WIRING_ANYSEARCH_KEY = 'any-secret';
 
 const VALID_CONFIG = {
   defaultProfile: 'research',
@@ -336,4 +337,60 @@ test('the web_search and fetch tools are registered with their parameter schemas
   assert.equal(tools.get('web_search').label, 'Web Search');
   assert.equal(tools.get('fetch').label, 'Fetch');
   assert.equal(tools.get('web_search').parameters.type, 'object');
+});
+
+test('/search-status lists anysearch as a supported provider even when the profile omits it', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, ctx, last } = await boot();
+
+  await commands.get('search-status').handler('', ctx);
+
+  assert.match(last().message, /- anysearch \(not in this profile\): 0\/0 credentials available/);
+});
+
+test('web_search routes an anysearch profile end to end without leaking extension data into markdown', async () => {
+  const originalFetch = globalThis.fetch;
+  let seen;
+  globalThis.fetch = async (input, init) => {
+    seen = { input: String(input), init };
+    return new Response(
+      JSON.stringify({
+        code: 0,
+        message: 'success',
+        request_id: 'req-1',
+        data: {
+          results: [{ title: 'AnySearch result', url: 'https://example.com', snippet: 'A snippet', content: 'SECRET-CONTENT' }],
+          metadata: { total_results: 1, search_time_ms: 5 }
+        }
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+  try {
+    writeConfig({
+      defaultProfile: 'any',
+      profiles: { any: { providers: ['anysearch'] } },
+      credentials: { anysearch: [{ alias: 'any-main', env: 'WIRING_ANYSEARCH_KEY' }] }
+    });
+    const { tools, ctx } = await boot();
+
+    const result = await tools.get('web_search').execute('call-1', { query: 'hello' }, undefined, undefined, ctx);
+
+    assert.equal(seen.input, 'https://api.anysearch.com/v1/search');
+    assert.equal(seen.init.headers.Authorization, 'Bearer any-secret');
+    const text = result.content[0].text;
+    assert.match(text, /AnySearch result/);
+    assert.ok(!text.includes('SECRET-CONTENT'), 'extension content must not leak into model-visible markdown');
+
+    const details = result.details.results[0];
+    assert.equal(details.provider, 'anysearch');
+    assert.equal(details.alias, 'any-main');
+    assert.deepEqual(details.extension, {
+      anysearch: { request_id: 'req-1', total_results: 1, search_time_ms: 5 }
+    });
+    assert.deepEqual(details.sources[0].extension, { anysearch: { content: 'SECRET-CONTENT' } });
+  } finally {
+    globalThis.fetch = originalFetch;
+    writeConfig(VALID_CONFIG);
+  }
 });

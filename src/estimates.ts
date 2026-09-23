@@ -1,4 +1,4 @@
-import type { Provider } from "./config.ts";
+import type { CredentialAllowance, Provider } from "./config.ts";
 
 /**
  * A versioned, dated estimate rule for one Search Provider.
@@ -30,6 +30,13 @@ export interface EstimatorOverride {
 /** Date the built-in pricing snapshots were researched (`docs/research/search-aggregation-landscape.md`). */
 export const ESTIMATOR_RESEARCH_DATE = "2026-09-22";
 
+/**
+ * Date the AnySearch estimator and allowance snapshot were researched from its
+ * first-party docs and pricing page. AnySearch was added after the original
+ * landscape survey, so it carries its own date.
+ */
+export const ANYSEARCH_RESEARCH_DATE = "2026-09-23";
+
 export const BUILT_IN_ESTIMATORS: Record<Provider, EstimatorRule> = {
 	exa: {
 		provider: "exa",
@@ -57,6 +64,15 @@ export const BUILT_IN_ESTIMATORS: Record<Provider, EstimatorRule> = {
 		unitsPerAttempt: 1,
 		costPerUnitUsd: 0.005,
 		basis: "$5 per 1,000 Search requests",
+	},
+	anysearch: {
+		provider: "anysearch",
+		version: "1",
+		date: ANYSEARCH_RESEARCH_DATE,
+		unit: "requests",
+		unitsPerAttempt: 1,
+		costPerUnitUsd: 0,
+		basis: "Public Free plan: 1,000 requests per calendar day at $0 (https://www.anysearch.com/pricing)",
 	},
 };
 
@@ -105,4 +121,60 @@ export function estimateAttempt(rule: EstimatorRule): Estimate {
 export function formatEstimate(estimate: Estimate): string {
 	const cost = estimate.costUsd > 0 ? ` (~$${estimate.costUsd.toFixed(4)})` : "";
 	return `${estimate.units} ${estimate.unit}${cost} [estimate; rule v${estimate.version}, ${estimate.date}]`;
+}
+
+/**
+ * A provider-default Credential Allowance Estimate: an estimated unit count over
+ * an explicit period, plus the first-party basis it was taken from. An allowance
+ * is display-only and never feeds routing.
+ */
+export interface AllowanceRule {
+	units: number;
+	period: CredentialAllowance["period"];
+	version: string;
+	date: string;
+	basis: string;
+}
+
+/** A resolved allowance, distinguishing a provider default from a user override. */
+export interface ResolvedAllowance extends AllowanceRule {
+	source: "credential" | "provider-default";
+}
+
+/**
+ * Built-in Credential Allowance Estimates. Only providers whose public plan
+ * publishes a known, resettable allowance get one; a provider without an entry
+ * has no built-in allowance.
+ */
+export const BUILT_IN_ALLOWANCES: Partial<Record<Provider, AllowanceRule>> = {
+	anysearch: {
+		units: 1000,
+		period: { kind: "calendar-day" },
+		version: "1",
+		date: ANYSEARCH_RESEARCH_DATE,
+		basis: "Public Free plan: 1,000 requests per calendar day (https://www.anysearch.com/pricing)",
+	},
+};
+
+/**
+ * Resolve a credential's allowance: the user's override when declared, otherwise
+ * the provider default. Returns `undefined` when neither exists. Pure. An
+ * override keeps the provider's basis metadata so the estimate still points at
+ * its first-party source; a provider with no built-in basis records that the
+ * allowance is user-declared.
+ */
+export function resolveAllowance(
+	provider: Provider,
+	override?: CredentialAllowance,
+): ResolvedAllowance | undefined {
+	const base = BUILT_IN_ALLOWANCES[provider];
+	if (!override) return base ? { ...base, source: "provider-default" } : undefined;
+	return {
+		units: override.units,
+		period: override.period,
+		version: base?.version ?? "user",
+		date: base?.date ?? ESTIMATOR_RESEARCH_DATE,
+		basis: base?.basis ?? "user-declared allowance",
+		source: "credential",
+	};
 }

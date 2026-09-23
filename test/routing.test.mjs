@@ -141,3 +141,64 @@ test('repeated calls with identical inputs produce an identical plan', () => {
   const second = plan(config.profiles.research, allSet, input).map((target) => target.alias);
   assert.deepEqual(first, second);
 });
+
+// --- AnySearch routing (ticket 01) ---
+
+const anyConfig = parseConfig(
+  {
+    defaultProfile: 'any',
+    profiles: {
+      any: { providers: ['exa', 'anysearch'] },
+      exaOnly: { providers: ['exa'] }
+    },
+    credentials: {
+      exa: [{ alias: 'exa-main', env: 'EXA_API_KEY' }],
+      anysearch: [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }]
+    }
+  },
+  'test.json'
+);
+const anyEnv = { EXA_API_KEY: 'exa-secret', ANYSEARCH_API_KEY: 'any-secret' };
+
+test('a profile that names anysearch builds an anysearch target when a credential is available', () => {
+  const targets = buildSearchPlan(
+    anyConfig.profiles.any,
+    resolveCredentials(anyConfig.credentials, anyEnv),
+    { now: NOW }
+  );
+  assert.deepEqual(targets.map((target) => target.provider), ['exa', 'anysearch']);
+  assert.deepEqual(targets.map((target) => target.alias), ['exa-main', 'any-main']);
+});
+
+test('a valid anysearch credential outside the active profile produces no target', () => {
+  const targets = buildSearchPlan(
+    anyConfig.profiles.exaOnly,
+    resolveCredentials(anyConfig.credentials, anyEnv),
+    { now: NOW }
+  );
+  assert.deepEqual(targets.map((target) => target.provider), ['exa']);
+  assert.equal(targets.some((target) => target.provider === 'anysearch'), false);
+});
+
+test('a credential allowance override never changes routing priority', () => {
+  const withAllowance = parseConfig(
+    {
+      defaultProfile: 'any',
+      profiles: { any: { providers: ['anysearch'] } },
+      credentials: {
+        anysearch: [
+          { alias: 'any-plain', env: 'ANY_PLAIN' },
+          { alias: 'any-promo', env: 'ANY_PROMO', allowance: { units: 2000, period: { kind: 'calendar-month' } } }
+        ]
+      }
+    },
+    'test.json'
+  );
+  const targets = buildSearchPlan(
+    withAllowance.profiles.any,
+    resolveCredentials(withAllowance.credentials, { ANY_PLAIN: 'a', ANY_PROMO: 'b' }),
+    { now: NOW }
+  );
+  // Declaration order is preserved: the allowance is display-only metadata.
+  assert.deepEqual(targets.map((target) => target.alias), ['any-plain', 'any-promo']);
+});

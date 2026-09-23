@@ -82,7 +82,8 @@ test('credentials whose environment variable is missing are excluded from the ra
       { alias: 'exa-backup', env: 'EXA_API_KEY_BACKUP' }
     ],
     tavily: [],
-    brave: []
+    brave: [],
+    anysearch: []
   };
   const resolved = resolveCredentials(credentials, { EXA_API_KEY: 'present' });
   const ranked = rankCredentials(

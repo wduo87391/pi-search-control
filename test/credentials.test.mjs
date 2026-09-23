@@ -8,7 +8,8 @@ const credentials = {
     { alias: 'tvly-work', env: 'TAVILY_API_KEY_WORK' },
     { alias: 'tvly-personal', env: 'TAVILY_API_KEY' }
   ],
-  brave: [{ alias: 'brave-main', env: 'BRAVE_API_KEY' }]
+  brave: [{ alias: 'brave-main', env: 'BRAVE_API_KEY' }],
+  anysearch: []
 };
 
 test('resolveCredentials marks every credential available when its environment variable is set', () => {
@@ -73,7 +74,8 @@ test('resolved credentials carry the declared usage period, defaulting to calend
         { alias: 'plain', env: 'PLAIN_API_KEY' }
       ],
       tavily: [],
-      brave: []
+      brave: [],
+      anysearch: []
     },
     { DAY_API_KEY: 'day', PLAIN_API_KEY: 'plain' }
   );
@@ -81,4 +83,43 @@ test('resolved credentials carry the declared usage period, defaulting to calend
     resolved.map((credential) => credential.period),
     [{ kind: 'calendar-day' }, { kind: 'calendar-month' }]
   );
+});
+
+test('an AnySearch credential without an override resolves the provider-default allowance', () => {
+  const resolved = resolveCredentials(
+    { exa: [], tavily: [], brave: [], anysearch: [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }] },
+    { ANYSEARCH_API_KEY: 'any-secret' }
+  );
+  const allowance = resolved[0].allowance;
+  assert.equal(allowance.units, 1000);
+  assert.deepEqual(allowance.period, { kind: 'calendar-day' });
+  assert.equal(allowance.source, 'provider-default');
+});
+
+test('a credential allowance override replaces units and period but stays separate from threshold', () => {
+  const resolved = resolveCredentials(
+    {
+      exa: [],
+      tavily: [],
+      brave: [],
+      anysearch: [
+        {
+          alias: 'any-promo',
+          env: 'ANYSEARCH_PROMO_KEY',
+          threshold: 5,
+          allowance: { units: 2000, period: { kind: 'calendar-month' } }
+        }
+      ]
+    },
+    { ANYSEARCH_PROMO_KEY: 'promo-secret' }
+  );
+  assert.equal(resolved[0].allowance.units, 2000);
+  assert.deepEqual(resolved[0].allowance.period, { kind: 'calendar-month' });
+  assert.equal(resolved[0].allowance.source, 'credential');
+  assert.equal(resolved[0].threshold, 5);
+});
+
+test('a provider with no built-in allowance and no override carries no allowance', () => {
+  const resolved = resolveCredentials(credentials, { EXA_API_KEY: 'exa-secret' });
+  assert.equal(resolved[0].allowance, undefined);
 });

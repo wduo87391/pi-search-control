@@ -673,3 +673,70 @@ test('threshold crossings reach the edge warning sink, which deduplicates per pe
   await orchestrateSearch(input({ config: thresholdConfig, profile: tvlySolo }), deps);
   assert.equal(warnings.length, 2, 'the next period warns again');
 });
+
+// --- AnySearch routing and accounting (ticket 01) ---
+
+const anyConfig = parseConfig(
+  {
+    defaultProfile: 'any',
+    profiles: { any: { providers: ['anysearch'] } },
+    credentials: { anysearch: [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }] }
+  },
+  'test.json'
+);
+const anyProfile = { name: 'any', providers: ['anysearch'] };
+
+function anyDeps(overrides = {}) {
+  return makeDeps({
+    resolveCredentials: (cfg) => resolveCredentials(cfg.credentials, { ANYSEARCH_API_KEY: 'any-secret' }),
+    ...overrides
+  });
+}
+
+test('a successful AnySearch attempt records one request unit at zero estimated cost with the estimator identity', async () => {
+  const { deps, recorded } = anyDeps();
+
+  const result = await orchestrateSearch(input({ config: anyConfig, profile: anyProfile }), deps);
+
+  assert.equal(result.provider, 'anysearch');
+  assert.equal(result.alias, 'any-main');
+  const attempt = recorded.find((event) => event.kind === 'attempt');
+  assert.equal(attempt.outcome, 'success');
+  assert.equal(attempt.units, 1);
+  assert.equal(attempt.costUsd, 0);
+  assert.equal(attempt.estimatorVersion, anyConfig.estimates.anysearch.version);
+  assert.equal(attempt.estimatorDate, anyConfig.estimates.anysearch.date);
+  // The first-party basis URL lives on the estimator rule the attempt was recorded from.
+  assert.match(anyConfig.estimates.anysearch.basis, /anysearch\.com/);
+});
+
+test('a profile that omits anysearch never attempts an anysearch credential', async () => {
+  const calls = [];
+  const exaConfig = parseConfig(
+    {
+      defaultProfile: 'exa',
+      profiles: { exa: { providers: ['exa'] } },
+      credentials: {
+        exa: [{ alias: 'exa-main', env: 'EXA_API_KEY' }],
+        anysearch: [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }]
+      }
+    },
+    'test.json'
+  );
+  const { deps } = makeDeps({
+    resolveCredentials: (cfg) =>
+      resolveCredentials(cfg.credentials, { EXA_API_KEY: 'exa-secret', ANYSEARCH_API_KEY: 'any-secret' }),
+    search: async (target) => {
+      calls.push(target.provider);
+      return okResponse();
+    }
+  });
+
+  const result = await orchestrateSearch(
+    input({ config: exaConfig, profile: { name: 'exa', providers: ['exa'] } }),
+    deps
+  );
+
+  assert.equal(result.provider, 'exa');
+  assert.deepEqual(calls, ['exa'], 'the configured anysearch credential is never attempted');
+});

@@ -35,12 +35,81 @@ test('parseConfig defaults a provider without credential declarations to an empt
   assert.deepEqual(config.credentials.exa, [{ alias: 'exa-main', env: 'EXA_API_KEY' }]);
   assert.deepEqual(config.credentials.tavily, []);
   assert.deepEqual(config.credentials.brave, []);
+  assert.deepEqual(config.credentials.anysearch, []);
 });
 
 test('parseConfig defaults a missing credentials block to every provider empty', () => {
   const { credentials, ...withoutCredentials } = base;
   const config = parseConfig(withoutCredentials, 'test.json');
-  assert.deepEqual(config.credentials, { exa: [], tavily: [], brave: [] });
+  assert.deepEqual(config.credentials, { exa: [], tavily: [], brave: [], anysearch: [] });
+});
+
+test('parseConfig accepts anysearch as a first-class provider in profiles and credentials', () => {
+  const config = parseConfig(
+    {
+      defaultProfile: 'research',
+      profiles: { research: { providers: ['exa', 'anysearch'] } },
+      credentials: { anysearch: [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }] }
+    },
+    'test.json'
+  );
+  assert.deepEqual(config.profiles.research.providers, ['exa', 'anysearch']);
+  assert.deepEqual(config.credentials.anysearch, [{ alias: 'any-main', env: 'ANYSEARCH_API_KEY' }]);
+});
+
+test('parseConfig accepts an anysearch estimator override', () => {
+  const config = parseConfig(
+    { ...base, estimates: { anysearch: { version: '2', unitsPerAttempt: 3 } } },
+    'test.json'
+  );
+  assert.equal(config.estimates.anysearch.version, '2');
+  assert.equal(config.estimates.anysearch.unitsPerAttempt, 3);
+});
+
+test('parseConfig accepts a per-credential allowance with explicit units and period', () => {
+  const config = parseConfig(
+    {
+      ...base,
+      credentials: {
+        anysearch: [
+          { alias: 'any-main', env: 'ANYSEARCH_API_KEY', allowance: { units: 2000, period: { kind: 'calendar-month' } } }
+        ]
+      }
+    },
+    'test.json'
+  );
+  assert.deepEqual(config.credentials.anysearch[0].allowance, {
+    units: 2000,
+    period: { kind: 'calendar-month' }
+  });
+});
+
+test('parseConfig leaves an allowance undefined when omitted', () => {
+  const config = parseConfig(base, 'test.json');
+  assert.equal(config.credentials.exa[0].allowance, undefined);
+});
+
+test('parseConfig rejects invalid allowances in the existing error style', () => {
+  const withAllowance = (allowance) => ({
+    ...base,
+    credentials: { exa: [{ alias: 'exa-main', env: 'EXA_API_KEY', allowance }] }
+  });
+  for (const bad of [
+    { units: 0, period: { kind: 'calendar-day' } },
+    { units: -5, period: { kind: 'calendar-day' } },
+    { units: 1.5, period: { kind: 'calendar-day' } },
+    { units: '1000', period: { kind: 'calendar-day' } },
+    { units: 1000 },
+    { units: 1000, period: { kind: 'nonsense' } },
+    { period: { kind: 'calendar-day' } },
+    'raw'
+  ]) {
+    assert.throws(
+      () => parseConfig(withAllowance(bad), 'test.json'),
+      /Invalid allowance.*credential "exa-main" in credentials\.exa in test\.json/,
+      `allowance ${JSON.stringify(bad)} must be rejected`
+    );
+  }
 });
 
 test('parseConfig resolves built-in estimator rules with a version and date', () => {

@@ -1,4 +1,5 @@
 import { PROVIDERS, type CredentialDeclaration, type Provider, type UsagePeriod } from "./config.ts";
+import { resolveAllowance, type ResolvedAllowance } from "./estimates.ts";
 import { DEFAULT_USAGE_PERIOD } from "./selection.ts";
 
 export interface ResolvedCredential {
@@ -17,6 +18,12 @@ export interface ResolvedCredential {
 	 * means no threshold behaviour for this credential.
 	 */
 	threshold?: number;
+	/**
+	 * Optional Credential Allowance Estimate: a provider default or a credential
+	 * override, used only for display. Absent means no allowance applies. Distinct
+	 * from `threshold`, which drives routing demotion.
+	 */
+	allowance?: ResolvedAllowance;
 }
 
 /**
@@ -45,6 +52,8 @@ export function resolveCredentials(
 				period: declaration.period ?? DEFAULT_USAGE_PERIOD,
 			};
 			if (declaration.threshold !== undefined) resolvedCredential.threshold = declaration.threshold;
+			const allowance = resolveAllowance(provider, declaration.allowance);
+			if (allowance !== undefined) resolvedCredential.allowance = allowance;
 			resolved.push(resolvedCredential);
 		}
 	}
