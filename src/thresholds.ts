@@ -126,22 +126,3 @@ export function createThresholdWarner(): ThresholdWarner {
 		},
 	};
 }
-
-/**
- * Alias-only status lines for every credential that declares a threshold, one
- * per credential. Pure. Never includes key material or environment-variable names.
- */
-export function describeThresholds(
-	credentials: readonly ResolvedCredential[],
-	attemptsByAlias: Record<string, number[]>,
-	now: number,
-): string[] {
-	const lines: string[] = [];
-	for (const credential of credentials) {
-		if (credential.threshold === undefined) continue;
-		const attempts = attemptsInPeriod(attemptsByAlias[credential.alias] ?? [], credential.period, now);
-		const state = attempts >= credential.threshold ? "demoted" : "ok";
-		lines.push(`${credential.alias}: ${attempts}/${credential.threshold} attempts this period (${state})`);
-	}
-	return lines.sort((a, b) => a.localeCompare(b));
-}

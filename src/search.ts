@@ -9,6 +9,11 @@ import { searchExa } from "./providers/exa.ts";
 import { searchTavily } from "./providers/tavily.ts";
 import { searchAnySearch } from "./providers/anysearch.ts";
 
+/** Apply the session's optional Provider Pin to one Search Profile. */
+export function applyProviderPin(profile: SearchProfile, providerPin?: Provider): SearchProfile {
+	return providerPin ? { ...profile, providers: [providerPin] } : profile;
+}
+
 export interface SearchTarget {
 	provider: Provider;
 	alias: string;

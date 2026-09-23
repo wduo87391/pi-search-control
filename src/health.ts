@@ -175,16 +175,6 @@ export function penaltiesFromHealth(state: HealthState, now: number): Record<str
 	return penalties;
 }
 
-/**
- * Alias-only status lines for the cooldowns active at `now`, one per credential.
- * Never includes key material or environment-variable names.
- */
-export function describeCooldowns(state: HealthState, now: number): string[] {
-	return Object.entries(activeCooldowns(state, now))
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([alias, entry]) => `${alias}: cooling until ${new Date(entry.until).toISOString()} (${entry.category})`);
-}
-
 /** Read the health store and prune it for display. Damage degrades to an empty store. */
 export function loadHealth(store: HealthStore, now: number): HealthReadResult {
 	const read = store.read();

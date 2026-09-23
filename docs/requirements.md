@@ -1,6 +1,6 @@
 # pi-search-control requirements
 
-Status: confirmed product design; implementation has not started.
+Status: V1 and the AnySearch + Search Status Panel increment are implemented.
 
 ## Purpose
 
@@ -11,16 +11,16 @@ The project is an attributed MIT-licensed fork of `pi-web-lite`; see [ADR 0001](
 ## Goals
 
 1. Select a complete search policy for the current Pi session with a slash command.
-2. Manage Exa, Tavily, and Brave through one stable search tool.
+2. Manage Exa, Tavily, Brave, and AnySearch through one stable search tool.
 3. Rotate legitimately controlled credentials predictably and recover from technical failures.
 4. Distinguish user-visible search requests from billable provider attempts.
 5. Show useful local usage and health information without claiming to know authoritative account balances.
 6. Preserve provider-specific capabilities behind a common result core.
 7. Keep secrets out of the extension configuration and tool/model output.
 
-## Non-goals for V1
+## Non-goals for this increment
 
-- DuckDuckGo, SearXNG, or additional search providers.
+- DuckDuckGo, SearXNG, or additional search providers beyond Exa, Tavily, Brave, and AnySearch.
 - MCP server management or a new MCP transport.
 - Extending or reworking the carried-over `fetch` tool. It ships unchanged from upstream because removing it would remove the model's "inspect this specific link" affordance and push URL reading into either raw-HTML `curl` or a wasteful search round-trip.
 - Automatic quality judgment or multi-provider result fusion.
@@ -50,11 +50,16 @@ Requirements:
 - Changing a profile MUST affect only the current session.
 - Resuming or navigating a saved session branch MUST restore the profile selected on that branch.
 - `web_search` MUST NOT expose a provider override that lets the model bypass the selected profile.
+- A user MAY apply a Provider Pin that temporarily narrows the current session branch to one configured Search Provider; this is a user command, never a model-visible tool parameter.
 - The package MUST provide documented example profiles such as `research`, `economy`, and `reliable`, but MUST NOT activate undeclared built-in profiles.
 
 ## Provider routing
 
-V1 providers are Exa, Tavily, and Brave. The fork removes the upstream Doubao adapter: it is excluded from V1, and the usage ledger's estimator rules require a verifiable first-party pricing basis per provider.
+V1 providers are Exa, Tavily, and Brave. This increment adds AnySearch as a first-class Search Provider. The fork removes the upstream Doubao adapter: it is excluded, and the Usage Ledger's estimator rules require a verifiable first-party pricing basis per provider.
+
+AnySearch integration MUST call the authenticated REST `POST /v1/search` endpoint directly. It MUST participate in Search Profiles, credential selection, Search Orchestration, Usage Ledger accounting, health state, and Result Normalization. Existing Search Profiles MUST remain unchanged until the user explicitly adds AnySearch to their provider order. The first AnySearch increment delegates capability routing to AnySearch and sends only the query and clamped result count; `tag`, `zone`, `language`, and `params` remain outside this increment.
+
+The AnySearch anonymous tier and HTTP 402 auto-registration flow MUST NOT be used. An AnySearch error body MUST be treated as sensitive because a 402 response can contain generated credentials; persisted or structured diagnostics may retain only sanitized status, error category, and request ID.
 
 The upstream `fetch` tool is carried over unchanged and is not part of provider routing.
 
@@ -72,6 +77,7 @@ For a `web_search` call containing multiple queries, each query MUST route, fail
 ### Health behavior
 
 - Rate-limited and transiently failing credentials MUST enter a time-bounded cooldown.
+- An AnySearch credential returning HTTP 402 quota exhaustion MUST enter a five-minute cooldown and Search Orchestration MUST continue to the next credential or provider.
 - Cooldown state MUST be shared across Pi sessions so a new session does not immediately repeat a known failing request.
 - Cooldowns MUST expire; transient failures MUST NOT permanently disable a credential.
 - Missing or unavailable credentials MUST degrade only the affected provider/profile path, not prevent the extension from loading.
@@ -91,6 +97,7 @@ Each credential declaration MUST contain:
 - an environment-variable reference;
 - an optional local warning threshold;
 - an optional usage-period/reset definition;
+- an optional Credential Allowance Estimate with an explicit unit count and period;
 - optional estimator overrides.
 
 Requirements:
@@ -125,8 +132,11 @@ Privacy and retention:
 - Query text MUST NOT be stored by default.
 - Per-attempt detail MUST be retained for 30 days.
 - Daily/monthly aggregates MUST remain available after detailed events expire.
-- The UI MUST label units/cost as estimates and MUST NOT present them as provider-authoritative balances.
-- Built-in provider estimators MAY be overridden by configuration because pricing and account plans change.
+- The UI MUST label units, cost, and derived remaining allowance as estimates and MUST NOT present them as provider-authoritative balances.
+- AnySearch's public Free plan snapshot is 1,000 requests per calendar day and MAY supply its default Credential Allowance Estimate. A user-specific promotional allowance such as 2,000 requests MUST remain a credential-level override until its reset period is known; it MUST NOT replace the provider default globally.
+- Estimated remaining allowance is the configured/default allowance minus locally recorded estimated units in that allowance's explicit period, floored at zero. It is unknown when no allowance applies or retained accounting cannot cover the full period.
+- Credential thresholds remain independent routing-demotion warnings; they MUST NOT be interpreted as allowances.
+- Built-in provider estimators and allowances MAY be overridden by configuration because pricing and account plans change.
 
 Threshold behavior:
 
@@ -142,7 +152,7 @@ Every successful provider response MUST expose a common core suitable for render
 - concise content/snippet when available;
 - provider identity.
 
-The structured result MUST also retain provider-specific extension data when available, rather than flattening Exa, Tavily, and Brave to their lowest common denominator. Raw provider data need not be copied wholesale into model-visible text.
+The structured result MUST also retain provider-specific extension data when available, rather than flattening Exa, Tavily, Brave, and AnySearch to their lowest common denominator. Raw provider data need not be copied wholesale into model-visible text.
 
 Failed fallback attempts SHOULD remain available in structured details for diagnostics without overwhelming normal search output.
 
@@ -163,16 +173,30 @@ Failed fallback attempts SHOULD remain available in structured details for diagn
 - Show the active profile and its provider order.
 - Reject unknown or invalid profiles without changing current state.
 
+### `/search-provider [provider|reset]`
+
+- With no argument in TUI mode, show every Search Provider that has at least one declared credential, including providers outside the active Search Profile.
+- With a configured provider name, apply a Provider Pin to the current session branch.
+- While pinned, Search Orchestration MUST route only through that provider and MUST NOT fall back to another provider after failure.
+- `reset` MUST remove the Provider Pin and restore the active Search Profile's ordered routing.
+- Selecting a Search Profile through `/search-profile` MUST also remove the Provider Pin.
+- Resuming or navigating a saved session branch MUST restore its most recent Provider Pin or reset.
+- The status line and Search Status Panel MUST show both the active Search Profile and Provider Pin; route membership and usability MUST reflect the effective single-provider route.
+- Configuration reload MUST reset the Provider Pin with a warning if the pinned provider no longer has a declared credential.
+- Unknown providers and providers without declared credentials MUST be rejected without changing current state.
+
 ### `/search-status`
 
-Show at least:
+In TUI mode, open a temporary full interactive Search Status Panel rather than printing status into the transcript. The panel MUST provide:
 
-- active profile and provider order;
-- provider availability;
-- credential aliases and health/cooldown state;
-- current-session request/attempt totals;
-- current usage-period counts and warnings;
-- estimator labels and dates.
+- an Overview page followed by one page for each supported Search Provider;
+- left/right arrow and Tab/Shift+Tab page navigation;
+- Escape or `q` to close;
+- active profile, provider order, current-session/daily/monthly request and attempt totals, and global warnings on Overview;
+- profile membership, credential availability, active cooldowns, thresholds, Credential Allowance Estimates, current-session/daily/monthly success and failure counts, and estimated consumption on each provider page;
+- an explicit **No usable route** warning when the active Search Profile has no eligible credential.
+
+RPC mode MUST emit a non-interactive notification built from the same status snapshot. Pi does not execute interactive extension commands through print/JSON prompts and their UI notifications are not observable, so those modes MUST NOT attempt to open the panel or claim command output support. The pure text formatter remains available for tests and future hosts. The TUI panel MUST NOT create a transcript entry.
 
 ### `/search-reload`
 
@@ -186,7 +210,9 @@ The Pi status area SHOULD show the active profile and a compact warning indicato
 
 - The extension SHOULD load when at least one usable configured route exists.
 - Profiles with missing providers or credentials MUST be marked degraded.
-- If no route can satisfy a query, `web_search` MUST return a concise failure summary with provider/credential aliases and error categories, never secrets.
+- A configured Search Provider outside the active Search Profile MUST NOT be used as an implicit fallback.
+- If the active Search Profile has no usable route, the Search Status Panel MUST identify that state before a search is attempted.
+- If no route can satisfy a query, `web_search` MUST return a concise failure summary with provider/credential aliases and error categories, never secrets, and direct an interactive user to `/search-status` for diagnostics.
 - Invalid default profiles and completely unusable configurations MUST be reported clearly rather than silently replaced with an implicit policy.
 
 ## Distribution
@@ -207,4 +233,29 @@ V1 is product-complete when a user can:
 7. resume a session with its prior profile;
 8. verify that raw keys and query text do not appear in persisted extension state.
 
-Everything beyond this boundary requires a later design decision rather than being silently included in V1.
+Everything beyond this boundary required a later design decision rather than being silently included in V1.
+
+## Provider Pin increment acceptance boundary
+
+The Provider Pin increment is complete when a user can:
+
+1. run `/search-provider` to select any Search Provider with a declared credential, whether or not it belongs to the active Search Profile;
+2. observe all subsequent searches on that session branch route only through the pinned provider, with no cross-provider fallback;
+3. run `/search-provider reset` or select a Search Profile to restore profile routing;
+4. resume or navigate session branches and recover the latest pin/reset state on each branch;
+5. see the active Search Profile and Provider Pin together in the status line and Search Status Panel;
+6. reload configuration and receive a warning plus automatic reset when the pinned provider no longer has a declared credential; and
+7. verify that `web_search` exposes no model-selectable Provider Pin or provider override.
+
+## Next increment acceptance boundary
+
+The AnySearch and Search Status Panel increment is complete when a user can:
+
+1. declare an environment-backed AnySearch credential and explicitly place AnySearch in selected Search Profiles;
+2. route and fall back through AnySearch using authenticated `POST /v1/search`, with result counts clamped to the provider's supported range;
+3. inspect AnySearch common result fields plus sanitized, namespaced provider extensions without persisting response-borne credentials;
+4. observe HTTP 402 as quota exhaustion, a five-minute credential cooldown, and fallback to the next usable route;
+5. open `/search-status` in TUI mode and navigate Overview plus all provider pages with left/right or Tab keys;
+6. inspect equivalent status information as an RPC notification, while print/JSON modes avoid unsupported interactive UI calls;
+7. see **No usable route** when every route in the active Search Profile is unavailable or cooling down, without silently routing through a provider outside that profile;
+8. distinguish locally estimated AnySearch use and remaining allowance from provider-authoritative balance data, without conflating an allowance with a Credential Threshold.

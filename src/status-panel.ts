@@ -1,8 +1,17 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { PROVIDERS, type Provider } from "./config.ts";
 import { formatEstimate } from "./estimates.ts";
-import { periodLabel, type CredentialStatus, type ProviderStatus, type StatusSnapshot } from "./status.ts";
-import type { GroupCounts, LedgerSummary } from "./ledger.ts";
+import {
+	formatCounts,
+	formatTotals,
+	periodLabel,
+	providerMembershipLabel,
+	providerRouteLabel,
+	type CredentialStatus,
+	type ProviderStatus,
+	type StatusOverview,
+	type StatusSnapshot,
+} from "./status.ts";
 
 /**
  * The subset of Pi's callback theme the panel needs. Declared with method
@@ -50,24 +59,12 @@ function fitLines(lines: string[], width: number): string[] {
 	return fitted;
 }
 
-function formatCounts(counts: GroupCounts): string {
-	return `${counts.success} ok, ${counts.failure} fail`;
-}
-
-function formatTotals(label: string, summary: LedgerSummary, partial: boolean): string {
-	const suffix = partial ? " [partial: session began before the 30-day detail-retention horizon]" : "";
-	return (
-		`${label}: ${summary.requests} Search Requests, ${summary.attempts} Provider Attempts ` +
-		`(${summary.success} succeeded, ${summary.failure} failed)${suffix}`
-	);
-}
-
 function credentialLines(credential: CredentialStatus, theme: StatusPanelTheme): string[] {
 	const muted = (text: string) => theme.fg("muted", text);
 	const lines: string[] = [
 		`${theme.fg("accent", "-")} ${credential.alias}: ` +
 			`${credential.available ? "available" : "unavailable"}, ` +
-			`${credential.eligible ? "eligible" : "not eligible"}`,
+			`${credential.eligible ? "locally eligible" : "not locally eligible"}`,
 	];
 	if (credential.cooldown) {
 		lines.push(
@@ -104,22 +101,17 @@ function credentialLines(credential: CredentialStatus, theme: StatusPanelTheme):
 	return lines;
 }
 
-function providerLines(provider: ProviderStatus, theme: StatusPanelTheme): string[] {
+function providerLines(provider: ProviderStatus, overview: StatusOverview, theme: StatusPanelTheme): string[] {
 	const heading = (text: string) => theme.bold(theme.fg("accent", text));
 	const muted = (text: string) => theme.fg("muted", text);
 	const lines: string[] = [heading(PROVIDER_TITLES[provider.provider])];
 
 	if (provider.configurationUnavailable) {
-		lines.push(muted("Profile membership: unknown (configuration unavailable)"));
+		lines.push(muted("Effective route membership: unknown (configuration unavailable)"));
 		lines.push(theme.fg("warning", "Configuration unavailable: credential state is not shown."));
 	} else {
-		lines.push(muted(`Profile membership: ${provider.inProfile ? "in profile" : "not in this profile"}`));
-		const route = provider.inProfile
-			? provider.routeUsable
-				? "route usable"
-				: "No usable route"
-			: "outside active profile";
-		lines.push(muted(`Route: ${route}`));
+		lines.push(muted(`Effective route membership: ${providerMembershipLabel(provider, overview)}`));
+		lines.push(muted(`Route: ${providerRouteLabel(provider, overview)}`));
 	}
 
 	lines.push(`This session: ${formatCounts(provider.session)}`);
@@ -142,6 +134,7 @@ function overviewLines(snapshot: StatusSnapshot, theme: StatusPanelTheme): strin
 	const muted = (text: string) => theme.fg("muted", text);
 	const lines: string[] = [heading("Overview")];
 	lines.push(`Search Profile: ${overview.profileName ?? "unknown"}`);
+	if (overview.providerPin) lines.push(`Provider Pin: ${overview.providerPin}`);
 	lines.push(
 		`Provider order: ${overview.providerOrder.length > 0 ? overview.providerOrder.join(" > ") : "unknown"}`,
 	);
@@ -200,7 +193,7 @@ export class StatusPanel {
 			{ title: "Overview", build: (theme) => overviewLines(this.snapshot, theme) },
 			...providers.map((provider) => ({
 				title: PROVIDER_TITLES[provider.provider],
-				build: (theme: StatusPanelTheme) => providerLines(provider, theme),
+				build: (theme: StatusPanelTheme) => providerLines(provider, this.snapshot.overview, theme),
 			})),
 		];
 	}

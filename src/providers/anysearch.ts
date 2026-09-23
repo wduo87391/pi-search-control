@@ -68,7 +68,13 @@ interface AnySearchResultItem {
 }
 
 interface AnySearchResponse {
-	/** Business result code. Success is 0; errors arrive as non-2xx HTTP statuses. */
+	/**
+	 * Business result code. The published contract is that a successful request
+	 * returns HTTP 200 with `code: 0` and `message: "success"`, while errors
+	 * return a non-2xx HTTP status; the docs instruct clients to "classify errors
+	 * by HTTP status and retain the request ID". No HTTP-200-with-nonzero-code
+	 * case is documented, so the adapter keys off `response.ok`.
+	 */
 	code?: number;
 	message?: string;
 	request_id?: string;
@@ -115,7 +121,20 @@ export async function searchAnySearch(
 		throw new ProviderFailureError({ provider: "anysearch", status: response.status, requestId });
 	}
 
-	const data = await response.json() as AnySearchResponse;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(await response.text());
+	} catch {
+		// A 2xx response whose body is not JSON (a proxy/WAF page, a truncated
+		// body) is a provider failure. The platform's own JSON parse error embeds
+		// a snippet of the raw body, so generate a local message instead and never
+		// surface the raw bytes.
+		throw new Error("AnySearch returned an unreadable response body.");
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("AnySearch returned an unreadable response body.");
+	}
+	const data = parsed as AnySearchResponse;
 	const results: SearchResult[] = [];
 	for (const item of data.data?.results ?? []) {
 		if (!item?.url) continue;
@@ -136,9 +155,8 @@ export async function searchAnySearch(
 	}
 
 	const extension: Record<string, unknown> = {};
-	if (typeof data.request_id === "string" && data.request_id.length > 0) {
-		extension.request_id = data.request_id;
-	}
+	const requestId = sanitizeRequestId(data.request_id);
+	if (requestId !== undefined) extension.request_id = requestId;
 	const metadata = data.data?.metadata;
 	if (typeof metadata?.total_results === "number") extension.total_results = metadata.total_results;
 	if (typeof metadata?.search_time_ms === "number") extension.search_time_ms = metadata.search_time_ms;

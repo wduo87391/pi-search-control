@@ -61,6 +61,7 @@ function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = n
   const notifications = [];
   const statuses = new Map();
   const customCalls = [];
+  const selectCalls = [];
   const renders = [];
   const ctx = {
     mode,
@@ -68,7 +69,10 @@ function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = n
     ui: {
       notify: (message, level) => notifications.push({ message, level }),
       setStatus: (key, text) => statuses.set(key, text),
-      select: async () => select,
+      select: async (title, items) => {
+        selectCalls.push({ title, items });
+        return select;
+      },
       // Records the factory and the component it builds, then resolves as if the
       // user closed it immediately. No live terminal is involved.
       custom: async (factory, options) => {
@@ -85,7 +89,7 @@ function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = n
       getHeader: () => (sessionStartedAt === null ? undefined : { timestamp: new Date(sessionStartedAt).toISOString() })
     }
   };
-  return { ctx, notifications, statuses, customCalls, renders, last: () => notifications.at(-1) };
+  return { ctx, notifications, statuses, customCalls, selectCalls, renders, last: () => notifications.at(-1) };
 }
 
 /** Boot a fresh extension instance (state lives in the factory closure). */
@@ -110,6 +114,17 @@ test('session_start restores the profile recorded on the session branch', async 
   const { statuses } = await boot({ branch });
 
   assert.equal(statuses.get('search-profile'), 'search: quick (brave)');
+});
+
+test('session_start restores the latest Provider Pin recorded on the session branch', async () => {
+  writeConfig(VALID_CONFIG);
+  const branch = [
+    { type: 'custom', customType: 'search-profile', data: { profile: 'quick' } },
+    { type: 'custom', customType: 'search-provider', data: { provider: 'tavily' } }
+  ];
+  const { statuses } = await boot({ branch });
+
+  assert.equal(statuses.get('search-profile'), 'search: quick (brave) | pinned: tavily');
 });
 
 test('a saved profile that no longer exists falls back to the default with a warning', async () => {
@@ -145,6 +160,72 @@ test('/search-profile switches the active profile, records it, and changes the i
   );
 });
 
+test('/search-provider pins a configured provider for the current session branch', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, entries, ctx, statuses, last } = await boot();
+
+  await commands.get('search-provider').handler('brave', ctx);
+
+  assert.deepEqual(entries, [
+    { type: 'custom', customType: 'search-provider', data: { provider: 'brave' } }
+  ]);
+  assert.equal(statuses.get('search-profile'), 'search: research (exa>tavily) | pinned: brave');
+  assert.equal(last().level, 'info');
+  assert.match(last().message, /Provider Pin: brave/);
+});
+
+test('/search-provider reset removes the Provider Pin and records the reset', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, entries, ctx, statuses, last } = await boot();
+  await commands.get('search-provider').handler('brave', ctx);
+
+  await commands.get('search-provider').handler('reset', ctx);
+
+  assert.deepEqual(entries.at(-1), {
+    type: 'custom', customType: 'search-provider', data: { provider: null }
+  });
+  assert.equal(statuses.get('search-profile'), 'search: research (exa>tavily)');
+  assert.equal(last().level, 'info');
+  assert.match(last().message, /Provider Pin reset/);
+});
+
+test('/search-profile selection cancels an active Provider Pin', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, ctx, statuses } = await boot();
+  await commands.get('search-provider').handler('tavily', ctx);
+
+  await commands.get('search-profile').handler('quick', ctx);
+
+  assert.equal(statuses.get('search-profile'), 'search: quick (brave)');
+});
+
+test('/search-provider selects from configured providers and completes providers plus reset', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, ctx, statuses, selectCalls } = await boot({ mode: 'tui', select: 'brave' });
+  const command = commands.get('search-provider');
+
+  assert.deepEqual(command.getArgumentCompletions('t'), [{ value: 'tavily', label: 'tavily' }]);
+  assert.deepEqual(command.getArgumentCompletions('r'), [{ value: 'reset', label: 'reset' }]);
+  await command.handler('', ctx);
+
+  assert.deepEqual(selectCalls, [{ title: 'Search Provider', items: ['exa', 'tavily', 'brave', 'reset'] }]);
+  assert.equal(statuses.get('search-profile'), 'search: research (exa>tavily) | pinned: brave');
+});
+
+test('/search-provider rejects an unknown or unconfigured provider without changing the active pin', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, entries, ctx, statuses, last } = await boot();
+  await commands.get('search-provider').handler('brave', ctx);
+  const before = entries.length;
+
+  await commands.get('search-provider').handler('anysearch', ctx);
+
+  assert.equal(last().level, 'error');
+  assert.match(last().message, /Unknown or unconfigured Search Provider "anysearch"/);
+  assert.equal(entries.length, before);
+  assert.equal(statuses.get('search-profile'), 'search: research (exa>tavily) | pinned: brave');
+});
+
 test('/search-profile rejects an unknown name without changing the active profile', async () => {
   writeConfig(VALID_CONFIG);
   const { commands, entries, ctx, statuses, last } = await boot();
@@ -178,10 +259,25 @@ test('/search-status reports the active profile, credential availability, and se
   assert.match(text, /Search Profile: research/);
   assert.match(text, /Provider order: exa > tavily/);
   assert.match(text, /Route: usable/);
-  assert.match(text, /- exa-main: available, eligible/);
-  assert.match(text, /- brave-main: available, eligible/);
+  assert.match(text, /- exa-main: available, locally eligible/);
+  assert.match(text, /- brave-main: available, locally eligible/);
   assert.match(text, /- brave \(not in this profile\): 1\/1 credentials eligible, outside active profile/);
   assert.match(text, /This session: 0 Search Requests, 0 Provider Attempts \(0 succeeded, 0 failed\)/);
+});
+
+test('/search-status shows the Provider Pin and the effective single-provider route', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, ctx, last } = await boot({ mode: 'rpc' });
+  await commands.get('search-provider').handler('brave', ctx);
+
+  await commands.get('search-status').handler('', ctx);
+
+  const text = last().message;
+  assert.match(text, /Search Profile: research/);
+  assert.match(text, /Provider Pin: brave/);
+  assert.match(text, /Provider order: brave/);
+  assert.match(text, /- brave \(pinned\): 1\/1 credentials locally eligible, route usable/);
+  assert.match(text, /- exa \(excluded by Provider Pin\): 1\/1 credentials locally eligible, outside effective route/);
 });
 
 test('/search-status reports per-provider and per-alias attempt counts for each period', async () => {
@@ -229,11 +325,28 @@ test('/search-status marks a credential whose environment variable is missing as
     await commands.get('search-status').handler('', ctx);
 
     const text = last().message;
-    assert.match(text, /- exa-main: unavailable, not eligible/);
+    assert.match(text, /- exa-main: unavailable, not locally eligible/);
     assert.match(text, /- exa \(in profile\): 0\/1 credentials eligible, No usable route/);
     assert.match(statuses.get('search-profile'), /unavailable: exa/);
   } finally {
     process.env.WIRING_EXA_KEY = saved;
+  }
+});
+
+test('the status footer marks a provider degraded when its only credential is cooling', async () => {
+  const { createFileHealthStore, emptyHealth, enterCooldowns } = await import('../src/health.ts');
+  const store = createFileHealthStore();
+  store.write(enterCooldowns(emptyHealth(), [{ alias: 'exa-main', errorCategory: 'rate_limit' }], Date.now()));
+  try {
+    writeConfig(VALID_CONFIG);
+    const { statuses } = await boot();
+
+    // exa is available by environment but its only credential is cooling, so the
+    // footer must agree with the panel rather than claiming the route is fine.
+    assert.match(statuses.get('search-profile'), /unavailable: exa/);
+  } finally {
+    store.write(emptyHealth());
+    writeConfig(VALID_CONFIG);
   }
 });
 
@@ -250,6 +363,33 @@ test('/search-reload activates a valid configuration without a restart', async (
   assert.equal(last().level, 'info');
   assert.match(last().message, /Search configuration reloaded\. Active Search Profile: research/);
   assert.equal(statuses.get('search-profile'), 'search: research (tavily>exa)');
+});
+
+test('/search-reload resets a Provider Pin whose provider loses all declared credentials', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, entries, ctx, statuses, last } = await boot();
+  await commands.get('search-provider').handler('brave', ctx);
+  writeConfig({
+    ...VALID_CONFIG,
+    profiles: { research: VALID_CONFIG.profiles.research },
+    credentials: {
+      exa: VALID_CONFIG.credentials.exa,
+      tavily: VALID_CONFIG.credentials.tavily
+    }
+  });
+
+  await commands.get('search-reload').handler('', ctx);
+
+  assert.deepEqual(entries.at(-1), {
+    type: 'custom', customType: 'search-provider', data: { provider: null }
+  });
+  assert.match(statuses.get('search-profile'), /^search: research \(exa>tavily\)/);
+  assert.doesNotMatch(statuses.get('search-profile'), /pinned/);
+  assert.equal(last().level, 'warning');
+  assert.match(last().message, /Provider Pin "brave" reset/);
+
+  await commands.get('search-provider').handler('exa', ctx);
+  assert.doesNotMatch(statuses.get('search-profile'), /warn: provider pin "brave"/);
 });
 
 test('/search-reload rejects an invalid candidate, names the field, and keeps the previous configuration active', async () => {
@@ -333,14 +473,25 @@ test('with no usable configuration the commands report the failure and no guidan
   writeConfig(VALID_CONFIG);
 });
 
-test('session_tree re-derives the profile from the branch and republishes status', async () => {
+test('session_tree restores Provider Pin, reset, and later profile selection in branch order', async () => {
   writeConfig(VALID_CONFIG);
   const { handlers, ctx, statuses } = await boot();
-
-  const branch = [{ type: 'custom', customType: 'search-profile', data: { profile: 'quick' } }];
+  const branch = [];
   ctx.sessionManager.getBranch = () => branch;
-  await handlers.get('session_tree')({}, ctx);
 
+  branch.push({ type: 'custom', customType: 'search-provider', data: { provider: 'tavily' } });
+  await handlers.get('session_tree')({}, ctx);
+  assert.equal(statuses.get('search-profile'), 'search: research (exa>tavily) | pinned: tavily');
+
+  branch.push({ type: 'custom', customType: 'search-provider', data: { provider: null } });
+  await handlers.get('session_tree')({}, ctx);
+  assert.equal(statuses.get('search-profile'), 'search: research (exa>tavily)');
+
+  branch.push(
+    { type: 'custom', customType: 'search-provider', data: { provider: 'exa' } },
+    { type: 'custom', customType: 'search-profile', data: { profile: 'quick' } }
+  );
+  await handlers.get('session_tree')({}, ctx);
   assert.equal(statuses.get('search-profile'), 'search: quick (brave)');
 });
 
@@ -352,6 +503,7 @@ test('the web_search and fetch tools are registered with their parameter schemas
   assert.equal(tools.get('web_search').label, 'Web Search');
   assert.equal(tools.get('fetch').label, 'Fetch');
   assert.equal(tools.get('web_search').parameters.type, 'object');
+  assert.deepEqual(Object.keys(tools.get('web_search').parameters.properties), ['query', 'queries']);
 });
 
 test('/search-status lists anysearch as a supported provider even when the profile omits it', async () => {
@@ -394,6 +546,25 @@ test('/search-status in TUI mode opens a non-overlay panel and sends no notifica
   assert.match(text, /Search Profile: research/);
   assert.match(text, /Route: usable/);
   assert.match(text, /Overview/);
+});
+
+test('/search-status TUI shows pinned routing and local credential eligibility', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands, ctx, customCalls } = await boot({ mode: 'tui' });
+  await commands.get('search-provider').handler('brave', ctx);
+
+  await commands.get('search-status').handler('', ctx);
+
+  const component = customCalls[0].component;
+  const overview = component.render(100).join('\n');
+  assert.match(overview, /Provider Pin: brave/);
+  assert.match(overview, /Provider order: brave/);
+
+  component.handleInput('\x1b[C');
+  const exaPage = component.render(100).join('\n');
+  assert.match(exaPage, /Effective route membership: excluded by Provider Pin/);
+  assert.match(exaPage, /exa-main: available, locally eligible/);
+  assert.match(exaPage, /Route: outside effective route/);
 });
 
 test('/search-status in RPC mode notifies text from the same snapshot and opens no component', async () => {
@@ -456,6 +627,84 @@ test('web_search passes interactive mode through to route diagnostics', async ()
   }
 });
 
+test('web_search routes only through the pinned provider outside the active profile', async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (input) => {
+    urls.push(String(input));
+    return new Response(
+      JSON.stringify({
+        code: 0,
+        message: 'success',
+        request_id: 'req-pin',
+        data: { results: [{ title: 'Pinned result', url: 'https://example.com', snippet: 'ok' }] }
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+  try {
+    writeConfig({
+      defaultProfile: 'research',
+      profiles: { research: { providers: ['exa', 'tavily'] } },
+      credentials: {
+        exa: [{ alias: 'exa-main', env: 'WIRING_EXA_KEY' }],
+        tavily: [{ alias: 'tvly-main', env: 'WIRING_TAVILY_KEY' }],
+        anysearch: [{ alias: 'any-main', env: 'WIRING_ANYSEARCH_KEY' }]
+      }
+    });
+    const { tools, commands, ctx } = await boot();
+    await commands.get('search-provider').handler('anysearch', ctx);
+
+    const result = await tools.get('web_search').execute('call-pin', { query: 'hello' }, undefined, undefined, ctx);
+
+    assert.deepEqual(urls, ['https://api.anysearch.com/v1/search']);
+    assert.equal(result.details.results[0].provider, 'anysearch');
+  } finally {
+    globalThis.fetch = originalFetch;
+    writeConfig(VALID_CONFIG);
+  }
+});
+
+test('a pinned provider failure does not fall back to the active profile', async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes('anysearch')) {
+      return new Response(JSON.stringify({ code: 401, message: 'failed', request_id: 'req-fail' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ results: [{ title: 'Unexpected fallback', url: 'https://example.com' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  };
+  try {
+    writeConfig({
+      defaultProfile: 'research',
+      profiles: { research: { providers: ['exa'] } },
+      credentials: {
+        exa: [{ alias: 'exa-main', env: 'WIRING_EXA_KEY' }],
+        anysearch: [{ alias: 'any-main', env: 'WIRING_ANYSEARCH_KEY' }]
+      }
+    });
+    const { tools, commands, ctx } = await boot();
+    await commands.get('search-provider').handler('anysearch', ctx);
+
+    const result = await tools.get('web_search').execute('call-pin-fail', { query: 'hello' }, undefined, undefined, ctx);
+
+    assert.deepEqual(urls, ['https://api.anysearch.com/v1/search']);
+    assert.match(result.content[0].text, /Error:/);
+    assert.equal(result.details.successful, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    writeConfig(VALID_CONFIG);
+  }
+});
+
 test('web_search routes an anysearch profile end to end without leaking extension data into markdown', async () => {
   const originalFetch = globalThis.fetch;
   let seen;
@@ -497,6 +746,50 @@ test('web_search routes an anysearch profile end to end without leaking extensio
       anysearch: { request_id: 'req-1', total_results: 1, search_time_ms: 5 }
     });
     assert.deepEqual(details.sources[0].extension, { anysearch: { content: 'SECRET-CONTENT' } });
+  } finally {
+    globalThis.fetch = originalFetch;
+    writeConfig(VALID_CONFIG);
+  }
+});
+
+test('an AnySearch 402 through web_search never leaks its body into details, content, or status', async () => {
+  const CANARY = 'CANARY-anysearch-402-wiring-5d2a';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('anysearch')) {
+      return new Response(
+        JSON.stringify({ code: 402, message: CANARY, request_id: 'req-402', data: { secret: CANARY } }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return new Response(
+      JSON.stringify({ results: [{ title: 'Exa fallback', url: 'https://example.com', text: 'ok' }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+  try {
+    writeConfig({
+      defaultProfile: 'any',
+      profiles: { any: { providers: ['anysearch', 'exa'] } },
+      credentials: {
+        anysearch: [{ alias: 'any-main', env: 'WIRING_ANYSEARCH_KEY' }],
+        exa: [{ alias: 'exa-main', env: 'WIRING_EXA_KEY' }]
+      }
+    });
+    const { tools, commands, ctx, notifications } = await boot({ mode: 'rpc' });
+
+    const result = await tools.get('web_search').execute('call-402', { query: 'hello' }, undefined, undefined, ctx);
+
+    // The AnySearch failure is recorded and the exa fallback succeeds.
+    assert.match(result.content[0].text, /Exa fallback/);
+    assert.equal(JSON.stringify(result.details).includes(CANARY), false, 'canary leaked into tool details');
+    assert.equal(result.content[0].text.includes(CANARY), false, 'canary leaked into tool content');
+
+    await commands.get('search-status').handler('', ctx);
+    const statusText = notifications.map((notification) => notification.message).join('\n');
+    assert.equal(statusText.includes(CANARY), false, 'canary leaked into status text');
+    assert.match(statusText, /anysearch/);
   } finally {
     globalThis.fetch = originalFetch;
     writeConfig(VALID_CONFIG);

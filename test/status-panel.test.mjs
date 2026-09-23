@@ -26,6 +26,7 @@ function provider(overrides = {}) {
   return {
     provider: 'exa',
     inProfile: true,
+    inEffectiveRoute: overrides.inEffectiveRoute ?? overrides.inProfile ?? true,
     configurationUnavailable: false,
     routeUsable: true,
     credentials: [],
@@ -141,27 +142,27 @@ test('provider pages render membership, credentials, counts, estimates, and allo
   const text = panel.render(200).join('\n');
 
   assert.match(text, /^.*Exa/);
-  assert.match(text, /Profile membership: in profile/);
+  assert.match(text, /Effective route membership: in profile/);
   assert.match(text, /Route: route usable/);
   assert.match(text, /This session: 1 ok, 1 fail/);
   assert.match(text, /Today: 2 ok, 1 fail/);
   assert.match(text, /This month: 3 ok, 1 fail/);
   assert.match(text, /Estimated use per attempt: 1 requests .*\[estimate; rule v1/);
-  assert.match(text, /exa-main: available, eligible/);
+  assert.match(text, /exa-main: available, locally eligible/);
   assert.match(text, /threshold: 100 \(5 attempts this period\)/);
   assert.match(text, /allowance: 5\/1000 units used, 995 remaining \(calendar-day\) \[estimate\]/);
 
   panel.handleInput(RIGHT); // Tavily
   const tavily = panel.render(200).join('\n');
-  assert.match(tavily, /Profile membership: in profile/);
+  assert.match(tavily, /Effective route membership: in profile/);
   assert.match(tavily, /Route: No usable route/);
-  assert.match(tavily, /tvly-main: unavailable, not eligible/);
+  assert.match(tavily, /tvly-main: unavailable, not locally eligible/);
   assert.match(tavily, /threshold: none/);
   assert.match(tavily, /allowance: unknown \(no allowance configured\) \[estimate\]/);
 
   panel.handleInput(RIGHT); // Brave
   const brave = panel.render(200).join('\n');
-  assert.match(brave, /Profile membership: not in this profile/);
+  assert.match(brave, /Effective route membership: not in this profile/);
   assert.match(brave, /Route: outside active profile/);
   assert.match(brave, /none configured/);
 });
@@ -196,7 +197,7 @@ test('navigation invalidates the cache and requests a render', () => {
 
   assert.equal(renders.length, 1);
   const after = panel.render(80);
-  assert.notEqual(after, before);
+  assert.notDeepEqual(after, before);
   assert.equal(renders.length, 1, 'render itself does not request another render');
 });
 
@@ -205,7 +206,7 @@ test('render caches by page and width', () => {
   const first = panel.render(80);
   assert.equal(panel.render(80), first, 'same page and width reuse the cache');
   const other = panel.render(60);
-  assert.notEqual(other, first);
+  assert.notDeepEqual(other, first);
   assert.equal(panel.render(60), other);
 });
 
@@ -303,7 +304,7 @@ test('a configuration-error snapshot stays navigable and invents no credential s
   for (let page = 0; page < 5; page++) {
     const text = panel.render(120).join('\n');
     if (page > 0) {
-      assert.match(text, /Profile membership: unknown \(configuration unavailable\)/);
+      assert.match(text, /Effective route membership: unknown \(configuration unavailable\)/);
       assert.match(text, /configuration unavailable/);
       assert.ok(!/- .*: available/.test(text), 'no credential availability is invented');
     }

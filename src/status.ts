@@ -12,7 +12,7 @@ import {
 	type LedgerState,
 	type LedgerSummary,
 } from "./ledger.ts";
-import { buildSearchPlan } from "./search.ts";
+import { applyProviderPin, buildSearchPlan } from "./search.ts";
 import { attemptsInPeriod } from "./selection.ts";
 import { mergePenalties, thresholdCrossings, thresholdPenalties } from "./thresholds.ts";
 
@@ -45,7 +45,9 @@ export interface CredentialStatus {
 	available: boolean;
 	/** Whether the credential's provider is named by the active Search Profile. */
 	inProfile: boolean;
-	/** Eligible for routing after availability and cooldown (demotion does not exclude). */
+	/** Whether the credential's provider belongs to the effective route after an optional Provider Pin. */
+	inEffectiveRoute: boolean;
+	/** Locally eligible after availability and cooldown; effective-route membership is separate. */
 	eligible: boolean;
 	/** Active Credential Cooldown, when one is in effect at the snapshot instant. */
 	cooldown?: { category: ErrorCategory; enteredAt: number; until: number };
@@ -59,13 +61,14 @@ export interface CredentialStatus {
 	allowance?: CredentialAllowanceStatus;
 }
 
-/** One provider's diagnostic record, present even when outside the active profile. */
+/** One provider's diagnostic record, present even when outside the effective route. */
 export interface ProviderStatus {
 	provider: Provider;
 	inProfile: boolean;
+	inEffectiveRoute: boolean;
 	/** True for a configuration-error snapshot: no credential state is invented. */
 	configurationUnavailable: boolean;
-	/** At least one eligible credential exists within the active profile. */
+	/** At least one eligible credential exists for this provider within the effective route. */
 	routeUsable: boolean;
 	credentials: CredentialStatus[];
 	/** The provider's per-attempt estimate rule, for reference. */
@@ -78,8 +81,10 @@ export interface ProviderStatus {
 /** The Overview page's data: profile, route readiness, totals, and global warnings. */
 export interface StatusOverview {
 	profileName?: string;
+	providerPin?: Provider;
+	/** Effective order after applying an optional Provider Pin. */
 	providerOrder: Provider[];
-	/** True when the active profile has at least one eligible credential. */
+	/** True when the effective route has at least one eligible credential. */
 	usableRoute: boolean;
 	/** True only while an observed `quota` cooldown is active; never provider-authoritative. */
 	quotaCondition: boolean;
@@ -113,6 +118,7 @@ export interface StatusInput {
 	/** Session creation time (ms); when before the retention horizon, session totals are partial. */
 	sessionStartedAt?: number;
 	activeProfileName?: string;
+	activeProviderPin?: Provider;
 	profileWarning?: string;
 	/** The active, validated configuration; absent means a configuration-error snapshot. */
 	config?: SearchControlConfig;
@@ -187,6 +193,7 @@ function buildCredentialStatus(
 	credential: ResolvedCredential,
 	context: {
 		inProfile: boolean;
+		inEffectiveRoute: boolean;
 		cooldown?: CooldownEntry;
 		demoted: boolean;
 		periodAttempts: number;
@@ -200,6 +207,7 @@ function buildCredentialStatus(
 		provider: credential.provider,
 		available: credential.available,
 		inProfile: context.inProfile,
+		inEffectiveRoute: context.inEffectiveRoute,
 		eligible: credential.available && context.cooldown === undefined,
 		demoted: context.demoted,
 	};
@@ -260,6 +268,7 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 			now,
 			overview: {
 				profileName: input.activeProfileName,
+				providerPin: input.activeProviderPin,
 				providerOrder: [],
 				usableRoute: false,
 				quotaCondition: false,
@@ -272,6 +281,7 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 			providers: PROVIDERS.map((provider) => ({
 				provider,
 				inProfile: false,
+				inEffectiveRoute: false,
 				configurationUnavailable: true,
 				routeUsable: false,
 				credentials: [],
@@ -285,7 +295,9 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 
 	const profileName = input.activeProfileName ?? config.defaultProfile;
 	const profile = config.profiles[profileName];
-	const providerOrder: Provider[] = profile ? [...profile.providers] : [];
+	const providerPin = input.activeProviderPin;
+	const effectiveProfile = profile ? applyProviderPin(profile, providerPin) : undefined;
+	const providerOrder: Provider[] = effectiveProfile ? [...effectiveProfile.providers] : [];
 
 	const credentials = input.credentials;
 	const attemptsByAlias = attemptsByAliasFrom(input.ledger);
@@ -294,8 +306,8 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 		penaltiesFromHealth(input.health, now),
 		thresholdPenalties(credentials, attemptsByAlias, now),
 	);
-	const plan = profile
-		? buildSearchPlan(profile, credentials, { now, attemptsByAlias, penalties })
+	const plan = effectiveProfile
+		? buildSearchPlan(effectiveProfile, credentials, { now, attemptsByAlias, penalties })
 		: [];
 	const planProviders = new Set(plan.map((target) => target.provider));
 	const crossedAliases = new Set(
@@ -317,11 +329,13 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 
 	const providers: ProviderStatus[] = PROVIDERS.map((provider) => {
 		const inProfile = profile?.providers.includes(provider) ?? false;
+		const inEffectiveRoute = effectiveProfile?.providers.includes(provider) ?? false;
 		const credentialStatuses = credentials
 			.filter((credential) => credential.provider === provider)
 			.map((credential) =>
 				buildCredentialStatus(credential, {
 					inProfile,
+					inEffectiveRoute,
 					cooldown: cooldowns[credential.alias],
 					demoted: crossedAliases.has(credential.alias),
 					periodAttempts: attemptsInPeriod(
@@ -337,8 +351,9 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 		return {
 			provider,
 			inProfile,
+			inEffectiveRoute,
 			configurationUnavailable: false,
-			routeUsable: inProfile && planProviders.has(provider),
+			routeUsable: inEffectiveRoute && planProviders.has(provider),
 			credentials: credentialStatuses,
 			estimate: estimateAttempt(config.estimates[provider]),
 			session: session.byProvider[provider] ?? emptyCounts(),
@@ -352,6 +367,7 @@ export function buildStatusSnapshot(input: StatusInput): StatusSnapshot {
 		now,
 		overview: {
 			profileName,
+			providerPin,
 			providerOrder,
 			usableRoute: plan.length > 0,
 			quotaCondition,
@@ -372,11 +388,13 @@ export function periodLabel(period: UsagePeriod): string {
 	return `rolling ${period.days ?? 0} days`;
 }
 
-function formatCounts(counts: GroupCounts): string {
+/** Format one period's success/failure counts. Shared by the text and TUI renderers. */
+export function formatCounts(counts: GroupCounts): string {
 	return `${counts.success} ok, ${counts.failure} fail`;
 }
 
-function formatTotals(label: string, summary: LedgerSummary, partial: boolean): string {
+/** Format one period's request/attempt totals, marking partial sessions. Shared by both renderers. */
+export function formatTotals(label: string, summary: LedgerSummary, partial: boolean): string {
 	const suffix = partial ? " [partial: session began before the 30-day detail-retention horizon]" : "";
 	return (
 		`${label}: ${summary.requests} Search Requests, ${summary.attempts} Provider Attempts ` +
@@ -386,7 +404,7 @@ function formatTotals(label: string, summary: LedgerSummary, partial: boolean): 
 
 function formatCredential(credential: CredentialStatus): string {
 	const parts: string[] = [`${credential.alias}: ${credential.available ? "available" : "unavailable"}`];
-	parts.push(credential.eligible ? "eligible" : "not eligible");
+	parts.push(credential.eligible ? "locally eligible" : "not locally eligible");
 	if (credential.cooldown) {
 		parts.push(
 			`cooling (${credential.cooldown.category}) until ${new Date(credential.cooldown.until).toISOString()}`,
@@ -412,6 +430,17 @@ function formatCredential(credential: CredentialStatus): string {
 	return parts.join(", ");
 }
 
+/** Shared semantic labels keep text and TUI status renderers in agreement. */
+export function providerMembershipLabel(provider: ProviderStatus, overview: StatusOverview): string {
+	if (!overview.providerPin) return provider.inEffectiveRoute ? "in profile" : "not in this profile";
+	return provider.inEffectiveRoute ? "pinned" : "excluded by Provider Pin";
+}
+
+export function providerRouteLabel(provider: ProviderStatus, overview: StatusOverview): string {
+	if (provider.inEffectiveRoute) return provider.routeUsable ? "route usable" : "No usable route";
+	return overview.providerPin ? "outside effective route" : "outside active profile";
+}
+
 /**
  * Render a snapshot as plain text. Host-independent: no TUI API, no theme, no
  * width assumptions. The RPC notification and tests use this; the future TUI
@@ -421,6 +450,7 @@ export function formatStatusText(snapshot: StatusSnapshot): string {
 	const { overview, providers } = snapshot;
 	const lines: string[] = [];
 	lines.push(`Search Profile: ${overview.profileName ?? "unknown"}`);
+	if (overview.providerPin) lines.push(`Provider Pin: ${overview.providerPin}`);
 	lines.push(
 		`Provider order: ${overview.providerOrder.length > 0 ? overview.providerOrder.join(" > ") : "unknown"}`,
 	);
@@ -446,11 +476,10 @@ export function formatStatusText(snapshot: StatusSnapshot): string {
 			lines.push(`- ${provider.provider}: configuration unavailable`);
 			continue;
 		}
-		const membership = provider.inProfile ? "in profile" : "not in this profile";
-		const eligibility = `${provider.credentials.filter((credential) => credential.eligible).length}/${provider.credentials.length} credentials eligible`;
-		const route = provider.inProfile
-			? (provider.routeUsable ? "route usable" : "No usable route")
-			: "outside active profile";
+		const membership = providerMembershipLabel(provider, overview);
+		const eligibilityLabel = overview.providerPin ? "credentials locally eligible" : "credentials eligible";
+		const eligibility = `${provider.credentials.filter((credential) => credential.eligible).length}/${provider.credentials.length} ${eligibilityLabel}`;
+		const route = providerRouteLabel(provider, overview);
 		lines.push(`- ${provider.provider} (${membership}): ${eligibility}, ${route}`);
 		lines.push(`  this session: ${formatCounts(provider.session)}`);
 		lines.push(`  today: ${formatCounts(provider.day)}`);

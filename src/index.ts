@@ -2,13 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { loadConfig, readConfigFile, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { PROVIDERS, loadConfig, readConfigFile, type Provider, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials } from "./credentials.ts";
 import { fetchOne } from "./fetch.ts";
 import { composeGuidance } from "./guidance.ts";
-import { createFileHealthStore, loadHealth } from "./health.ts";
+import { createFileHealthStore, activeCooldowns, loadHealth } from "./health.ts";
 import { createFileLedgerStore, loadLedger } from "./ledger.ts";
-import { searchWithTarget } from "./search.ts";
+import { applyProviderPin, searchWithTarget } from "./search.ts";
 import { reloadActiveState, type ActiveSearchState } from "./reload.ts";
 import { buildStatusSnapshot, formatStatusText } from "./status.ts";
 import { StatusPanel } from "./status-panel.ts";
@@ -46,13 +46,19 @@ function compactList(items: string[], max = 4): string {
 	return `${items.slice(0, max).join(", ")} +${items.length - max} more`;
 }
 
+function providerCommandOptions(config: SearchControlConfig): Array<Provider | "reset"> {
+	return [...PROVIDERS.filter((provider) => config.credentials[provider].length > 0), "reset"];
+}
+
 const PROFILE_ENTRY = "search-profile";
+const PROVIDER_ENTRY = "search-provider";
 const STATUS_KEY = "search-profile";
 
 export default function (pi: ExtensionAPI) {
 	let currentConfig: SearchControlConfig | undefined;
 	let configError: string | undefined;
 	let activeProfileName: string | undefined;
+	let activeProviderPin: Provider | undefined;
 	// The composed guidance fragment for the active profile, recomputed only when
 	// the profile changes so the prompt prefix stays stable across turns.
 	let activeGuidance = "";
@@ -87,26 +93,46 @@ export default function (pi: ExtensionAPI) {
 
 	function restoreProfile(ctx: ExtensionContext): void {
 		activeProfileName = undefined;
+		activeProviderPin = undefined;
 		profileWarning = undefined;
 		if (!currentConfig) return;
 
-		let saved: string | undefined;
+		let savedProfile: string | undefined;
+		let savedPin: Provider | undefined;
 		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "custom" && entry.customType === PROFILE_ENTRY) {
+			if (entry.type !== "custom") continue;
+			if (entry.customType === PROFILE_ENTRY) {
 				const data = entry.data as { profile?: unknown } | undefined;
-				if (data && typeof data.profile === "string") saved = data.profile;
+				if (data && typeof data.profile === "string") {
+					savedProfile = data.profile;
+					savedPin = undefined;
+				}
+			} else if (entry.customType === PROVIDER_ENTRY) {
+				const data = entry.data as { provider?: unknown } | undefined;
+				if (data?.provider === null) {
+					savedPin = undefined;
+				} else if (typeof data?.provider === "string" && PROVIDERS.includes(data.provider as Provider)) {
+					savedPin = data.provider as Provider;
+				}
 			}
 		}
 
-		if (saved) {
-			if (currentConfig.profiles[saved]) {
-				activeProfileName = saved;
+		if (savedProfile) {
+			if (currentConfig.profiles[savedProfile]) {
+				activeProfileName = savedProfile;
 			} else {
 				activeProfileName = currentConfig.defaultProfile;
-				profileWarning = `profile "${saved}" no longer exists`;
+				profileWarning = `profile "${savedProfile}" no longer exists`;
 			}
 		} else {
 			activeProfileName = currentConfig.defaultProfile;
+		}
+		if (savedPin) {
+			if (currentConfig.credentials[savedPin].length > 0) {
+				activeProviderPin = savedPin;
+			} else {
+				profileWarning = `provider pin "${savedPin}" no longer has a declared credential`;
+			}
 		}
 		activeGuidance = composeGuidance(currentConfig.profiles[activeProfileName]);
 	}
@@ -120,10 +146,20 @@ export default function (pi: ExtensionAPI) {
 		const profile = currentConfig.profiles[name];
 		const order = profile ? profile.providers.join(">") : "unknown";
 		let text = `search: ${name} (${order})`;
+		if (activeProviderPin) text += ` | pinned: ${activeProviderPin}`;
 		if (profile) {
 			const resolved = resolveCredentials(currentConfig.credentials, process.env);
-			const degraded = profile.providers.filter(
-				(provider) => !resolved.some((credential) => credential.provider === provider && credential.available)
+			// Route readiness must match the status panel: a credential whose
+			// environment variable is missing *or* that is in an active cooldown is
+			// not a usable route. Without the cooldown check the footer could claim a
+			// provider is fine while the panel reports "No usable route".
+			const now = Date.now();
+			const cooling = activeCooldowns(loadHealth(healthStore, now).state, now);
+			const effectiveProviders = applyProviderPin(profile, activeProviderPin).providers;
+			const degraded = effectiveProviders.filter(
+				(provider) => !resolved.some(
+					(credential) => credential.provider === provider && credential.available && cooling[credential.alias] === undefined,
+				)
 			);
 			if (degraded.length > 0) text += ` | unavailable: ${degraded.join(",")}`;
 		}
@@ -158,6 +194,7 @@ export default function (pi: ExtensionAPI) {
 			sessionId: ctx.sessionManager.getSessionId(),
 			sessionStartedAt,
 			activeProfileName: activeProfileName ?? config?.defaultProfile,
+			activeProviderPin,
 			profileWarning,
 			config,
 			configError,
@@ -178,7 +215,23 @@ export default function (pi: ExtensionAPI) {
 		if (!profile) {
 			throw new Error(`Search Profile "${name}" is not declared in profiles.`);
 		}
-		return profile;
+		return applyProviderPin(profile, activeProviderPin);
+	}
+
+	function selectProvider(provider: Provider, ctx: ExtensionContext): void {
+		activeProviderPin = provider;
+		if (profileWarning?.startsWith("provider pin ")) profileWarning = undefined;
+		pi.appendEntry(PROVIDER_ENTRY, { provider });
+		updateStatus(ctx);
+		ctx.ui.notify(`Provider Pin: ${provider}`, "info");
+	}
+
+	function resetProviderPin(ctx: ExtensionContext): void {
+		activeProviderPin = undefined;
+		if (profileWarning?.startsWith("provider pin ")) profileWarning = undefined;
+		pi.appendEntry(PROVIDER_ENTRY, { provider: null });
+		updateStatus(ctx);
+		ctx.ui.notify("Provider Pin reset; Search Profile routing restored.", "info");
 	}
 
 	function selectProfile(name: string, ctx: ExtensionContext): void {
@@ -188,12 +241,48 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		activeProfileName = name;
+		activeProviderPin = undefined;
 		profileWarning = undefined;
 		activeGuidance = composeGuidance(currentConfig.profiles[name]);
 		pi.appendEntry(PROFILE_ENTRY, { profile: name });
 		updateStatus(ctx);
 		ctx.ui.notify(`Search Profile: ${name} (${currentConfig.profiles[name].providers.join(">")})`, "info");
 	}
+
+	pi.registerCommand("search-provider", {
+		description: "Pin one Search Provider for this session",
+		getArgumentCompletions: (prefix) => {
+			if (!currentConfig) return null;
+			const values = providerCommandOptions(currentConfig).filter((value) => value.startsWith(prefix));
+			return values.length > 0 ? values.map((value) => ({ value, label: value })) : null;
+		},
+		handler: async (args, ctx) => {
+			if (!currentConfig) refreshConfig();
+			if (!currentConfig) {
+				ctx.ui.notify(`Search configuration unavailable: ${configError ?? "unknown error"}`, "error");
+				return;
+			}
+			let requested = args.trim();
+			if (!requested) {
+				if (ctx.mode !== "tui") {
+					const state = activeProviderPin ? `Active Provider Pin: ${activeProviderPin}.` : "No active Provider Pin.";
+					ctx.ui.notify(`${state} Use /search-provider <provider|reset>.`, "info");
+					return;
+				}
+				requested = await ctx.ui.select("Search Provider", providerCommandOptions(currentConfig)) ?? "";
+				if (!requested) return;
+			}
+			if (requested === "reset") {
+				resetProviderPin(ctx);
+				return;
+			}
+			if (!PROVIDERS.includes(requested as Provider) || currentConfig.credentials[requested as Provider].length === 0) {
+				ctx.ui.notify(`Unknown or unconfigured Search Provider "${requested}".`, "error");
+				return;
+			}
+			selectProvider(requested as Provider, ctx);
+		},
+	});
 
 	pi.registerCommand("search-profile", {
 		description: "Select the Search Profile for this session",
@@ -278,15 +367,29 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const previousPin = activeProviderPin;
+			const resetPin = previousPin !== undefined && state.config?.credentials[previousPin].length === 0;
+
 			// Swap atomically: the whole next state was derived before any assignment.
 			currentConfig = state.config;
 			configError = undefined;
 			activeProfileName = state.activeProfileName;
 			activeGuidance = state.activeGuidance;
-			profileWarning = state.profileWarning;
+			activeProviderPin = resetPin ? undefined : previousPin;
+			profileWarning = resetPin
+				? `provider pin "${previousPin}" no longer has a declared credential`
+				: state.profileWarning;
+			if (resetPin) pi.appendEntry(PROVIDER_ENTRY, { provider: null });
 			updateStatus(ctx);
 			const name = state.activeProfileName ?? state.config?.defaultProfile ?? "unknown";
-			ctx.ui.notify(`Search configuration reloaded. Active Search Profile: ${name}`, "info");
+			if (resetPin) {
+				ctx.ui.notify(
+					`Search configuration reloaded. Provider Pin "${previousPin}" reset because it has no declared credential. Active Search Profile: ${name}`,
+					"warning",
+				);
+			} else {
+				ctx.ui.notify(`Search configuration reloaded. Active Search Profile: ${name}`, "info");
+			}
 		},
 	});
 

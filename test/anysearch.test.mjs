@@ -156,6 +156,41 @@ test('a malformed successful payload degrades to an empty response instead of th
   assert.equal(response.extension, undefined);
 });
 
+test('a 2xx body that is not JSON throws a local error and never surfaces the raw body', async (t) => {
+  const canary = 'CANARY-anysearch-200-body-9c3f1a';
+  stubFetch(t, () => new Response(`<html>${canary}</html>`, { status: 200 }));
+
+  await assert.rejects(
+    () => searchAnySearch('q', 'key', options),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.equal(err.message.includes(canary), false, 'raw 2xx body leaked into the message');
+      assert.match(err.message, /unreadable response body/);
+      return true;
+    }
+  );
+});
+
+test('a 2xx body that is valid JSON but not an object throws a local error', async (t) => {
+  stubFetch(t, () => new Response('null', { status: 200 }));
+
+  await assert.rejects(
+    () => searchAnySearch('q', 'key', options),
+    (err) => {
+      assert.match(err.message, /unreadable response body/);
+      return true;
+    }
+  );
+});
+
+test('a success-path request_id that is not allowlisted is dropped', async (t) => {
+  stubFetch(t, () => jsonResponse({ code: 0, request_id: 'evil value <script>', data: { results: [] } }));
+
+  const response = await searchAnySearch('q', 'key', options);
+
+  assert.equal(response.extension, undefined, 'a non-allowlisted request_id must not reach the extension');
+});
+
 test('normalization namespaces AnySearch extensions and markdown never renders them', async (t) => {
   stubFetch(t, () => jsonResponse(payload));
 

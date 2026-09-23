@@ -12,6 +12,7 @@ Recommended reuse boundary:
 2. Build the session policy, credential scheduling, health state, ledger, commands, and prompt behavior in `pi-search-control`.
 3. Do not implement an MCP transport. If MCP providers are added later, integrate through an existing MCP client/adapter.
 4. Keep V1 to Exa, Tavily, and Brave. Add providers only after the control-plane model is stable.
+5. The control-plane model is now implemented, and AnySearch is the first post-V1 Search Provider. Integrate its REST endpoint directly so it participates in the existing routing and accounting seams; its available MCP transport does not reopen generic MCP support.
 
 ## Existing options
 
@@ -100,6 +101,25 @@ Sources:
 - [Brave Search API and pricing](https://brave.com/search/api)
 - [Brave API documentation](https://api.search.brave.com/app/documentation)
 
+### AnySearch
+
+AnySearch documents an authenticated `POST https://api.anysearch.com/v1/search` endpoint that returns a stable JSON envelope with title, URL, snippet, optional content, request ID, result count, and upstream search duration. `max_results` accepts 1–10. Optional vertical-search controls (`tag`, `zone`, `language`, and `params`) exist, but the first adapter can rely on AnySearch's automatic intent routing.
+
+The published contract states that a successful request returns HTTP 200 with `code: 0` and `message: "success"`, while errors return a non-2xx HTTP status; the docs instruct clients to "classify errors by HTTP status and retain the request ID". No HTTP-200-with-nonzero-`code` case is documented, so the adapter keys success off `response.ok` and does not treat `code` as a second error channel.
+
+Its public Free plan lists 1,000 requests per day and 20 QPS per key. A separately granted 2,000-request developer allowance has an unknown reset period, so it is user configuration rather than a built-in estimator assumption.
+
+HTTP 402 means quota exhaustion. The anonymous auto-registration flow can place a generated username, password, and API key inside the 402 response message, making the complete error body sensitive even when the extension uses authenticated requests. The adapter must sanitize failures before they enter structured tool details, session persistence, or logs.
+
+Primary sources:
+
+- [Quick Start](https://www.anysearch.com/docs/quick-start)
+- [`POST /v1/search`](https://www.anysearch.com/docs/api-endpoints/v1-search)
+- [Pricing](https://www.anysearch.com/pricing)
+- [FAQ](https://www.anysearch.com/faq)
+
+Conclusion: add AnySearch as a first-class REST Search Provider after V1. Keep its anonymous tier, auto-registration flow, MCP transport, and explicit vertical capability options outside the first increment.
+
 ### DuckDuckGo
 
 DuckDuckGo documents where its consumer search results come from, but its historical Instant Answer endpoint is not equivalent to a supported general web-results API. General DuckDuckGo integrations commonly rely on HTML scraping, browser automation, or third-party wrappers, which have a different stability and policy profile from Exa, Tavily, and Brave.
@@ -128,8 +148,9 @@ The differentiated work is:
 The work that should be reused is:
 
 - Exa, Tavily, and Brave HTTP adapters;
+- AnySearch's documented REST contract, implemented behind the same provider-adapter seam;
 - Pi's extension commands, session entries, system-prompt hook, tool activation, and status UI;
-- an existing MCP transport if MCP support is added later.
+- an existing MCP transport if generic MCP support is added later.
 
 ## Final build/no-build assessment
 

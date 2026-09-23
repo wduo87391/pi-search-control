@@ -7,7 +7,6 @@ import {
   activeCooldowns,
   cooldownDurationFor,
   createMemoryHealthStore,
-  describeCooldowns,
   emptyHealth,
   enterCooldowns,
   loadHealth,
@@ -82,15 +81,6 @@ test('cooldown state round-trips through the injected store and is visible to a 
   assert.deepEqual(penaltiesFromHealth(read.state, NOW), { 'exa-main': 'cooling' });
   // ...and it expires without any further write.
   assert.deepEqual(loadHealth(store, NOW + RATE_LIMIT_COOLDOWN_MS).state.cooldowns, {});
-});
-
-test('status lines name the alias and the expiry, never key material', () => {
-  const state = enterCooldowns(emptyHealth(), [{ alias: 'exa-main', errorCategory: 'rate_limit' }], NOW);
-  const lines = describeCooldowns(state, NOW);
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /^exa-main: cooling until /);
-  assert.match(lines[0], new RegExp(new Date(NOW + RATE_LIMIT_COOLDOWN_MS).toISOString().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(lines[0], /\(rate_limit\)$/);
 });
 
 test('parseHealthState rejects a foreign or malformed document', () => {

@@ -4,7 +4,6 @@ import { parseConfig } from '../src/config.ts';
 import { resolveCredentials } from '../src/credentials.ts';
 import {
   createThresholdWarner,
-  describeThresholds,
   formatThresholdWarning,
   mergePenalties,
   thresholdCrossings,
@@ -118,20 +117,4 @@ test('the warning is deduplicated within a period and reappears in the next peri
 
   const nextPeriod = thresholdCrossings(resolved, { 'exa-threshold': [NEXT_MONTH, NEXT_MONTH, NEXT_MONTH] }, NEXT_MONTH);
   assert.equal(warner.warningsFor(nextPeriod).length, 1, 'the next period warns again');
-});
-
-test('describeThresholds reports per-credential counts against the period and never key material', () => {
-  const lines = describeThresholds(resolved, { 'exa-threshold': [NOW, NOW, NOW], 'tvly-cap': [NOW] }, NOW);
-  assert.deepEqual(lines, [
-    'exa-threshold: 3/3 attempts this period (demoted)',
-    'tvly-cap: 1/1 attempts this period (demoted)'
-  ]);
-  assert.ok(!lines.join('\n').includes('exa-secret'));
-  assert.ok(!lines.join('\n').includes('EXA_THRESHOLD'));
-
-  const below = describeThresholds(resolved, { 'exa-threshold': [NOW] }, NOW);
-  assert.deepEqual(below, [
-    'exa-threshold: 1/3 attempts this period (ok)',
-    'tvly-cap: 0/1 attempts this period (ok)'
-  ]);
 });

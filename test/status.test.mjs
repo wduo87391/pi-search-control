@@ -146,6 +146,50 @@ test('a configured provider outside the active profile is not a usable route', (
   assert.equal(exa.routeUsable, false);
 });
 
+test('a research profile with no usable Exa/Tavily route becomes usable only once AnySearch is both configured and added to the profile', () => {
+  const credentials = {
+    exa: [{ alias: 'exa-main', env: 'EXA_KEY' }],
+    tavily: [{ alias: 'tvly-work', env: 'TVLY_WORK' }],
+    anysearch: [{ alias: 'any-main', env: 'ANY_KEY' }]
+  };
+  // Exa and Tavily credentials are unset; the AnySearch credential is set but
+  // AnySearch is not yet part of the research profile.
+  const withoutAnySearch = build({
+    config: parseConfig(
+      {
+        defaultProfile: 'research',
+        profiles: { research: { providers: ['exa', 'tavily'] } },
+        credentials
+      },
+      'test.json'
+    ),
+    env: { ANY_KEY: 'z' }
+  });
+  assert.equal(withoutAnySearch.overview.usableRoute, false);
+  assert.match(formatStatusText(withoutAnySearch), /Route: No usable route/);
+  const anyOutside = withoutAnySearch.providers.find((provider) => provider.provider === 'anysearch');
+  assert.equal(anyOutside.inProfile, false);
+  assert.equal(anyOutside.routeUsable, false, 'a configured credential alone is not a usable route');
+
+  // The same credential becomes a usable route only after AnySearch is added.
+  const withAnySearch = build({
+    config: parseConfig(
+      {
+        defaultProfile: 'research',
+        profiles: { research: { providers: ['exa', 'tavily', 'anysearch'] } },
+        credentials
+      },
+      'test.json'
+    ),
+    env: { ANY_KEY: 'z' }
+  });
+  assert.equal(withAnySearch.overview.usableRoute, true);
+  const anyInside = withAnySearch.providers.find((provider) => provider.provider === 'anysearch');
+  assert.equal(anyInside.inProfile, true);
+  assert.equal(anyInside.routeUsable, true);
+  assert.match(formatStatusText(withAnySearch), /Route: usable/);
+});
+
 test('allowance precedence, provider default, and floor-at-zero remaining', () => {
   const config = parseConfig(
     {
