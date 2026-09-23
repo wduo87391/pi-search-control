@@ -321,6 +321,81 @@ export function summarizePeriod(
 	return summarizeEvents(events.filter((event) => periodKey(event.at, granularity) === key));
 }
 
+/** Fold a persisted aggregate bucket into a summary. Pure. */
+export function summaryFromBucket(bucket: LedgerBucket): LedgerSummary {
+	return {
+		requests: bucket.requests,
+		attempts: bucket.attempts,
+		success: bucket.success,
+		failure: bucket.failure,
+		units: bucket.units,
+		costUsd: bucket.costUsd,
+		byProvider: cloneCounts(bucket.byProvider),
+		byAlias: cloneCounts(bucket.byAlias),
+	};
+}
+
+function cloneCounts(counts: Record<string, GroupCounts>): Record<string, GroupCounts> {
+	const clone: Record<string, GroupCounts> = {};
+	for (const [key, value] of Object.entries(counts)) clone[key] = { ...value };
+	return clone;
+}
+
+function mergeSummary(into: LedgerSummary, from: LedgerSummary): void {
+	into.requests += from.requests;
+	into.attempts += from.attempts;
+	into.success += from.success;
+	into.failure += from.failure;
+	into.units += from.units;
+	into.costUsd += from.costUsd;
+	mergeCounts(into.byProvider, from.byProvider);
+	mergeCounts(into.byAlias, from.byAlias);
+}
+
+/**
+ * Summarize the period containing `now` from both retained events and the
+ * compacted aggregate buckets. Pruning removes an event from `events` when it
+ * folds it into a bucket, so the two sources are disjoint and never double
+ * count. This keeps the current month complete across the detail-retention
+ * boundary. Pure.
+ */
+export function summarizePeriodComplete(
+	state: LedgerState,
+	now: number,
+	granularity: Granularity,
+): LedgerSummary {
+	const key = periodKey(now, granularity);
+	const summary = summarizePeriod(state.events, now, granularity);
+	for (const bucket of state.buckets) {
+		if (bucket.granularity !== granularity || bucket.period !== key) continue;
+		mergeSummary(summary, summaryFromBucket(bucket));
+	}
+	return summary;
+}
+
+/**
+ * Estimated units recorded for one credential alias within the calendar period
+ * containing `at`, combining retained events and compacted buckets. Pure.
+ */
+export function unitsInCalendarPeriod(
+	state: LedgerState,
+	alias: string,
+	at: number,
+	granularity: Granularity,
+): number {
+	const key = periodKey(at, granularity);
+	let units = 0;
+	for (const event of state.events) {
+		if (event.kind !== "attempt" || event.alias !== alias) continue;
+		if (periodKey(event.at, granularity) === key) units += event.units;
+	}
+	for (const bucket of state.buckets) {
+		if (bucket.granularity !== granularity || bucket.period !== key) continue;
+		units += bucket.byAlias[alias]?.units ?? 0;
+	}
+	return units;
+}
+
 function emptyBucket(granularity: Granularity, period: string): LedgerBucket {
 	return {
 		granularity,

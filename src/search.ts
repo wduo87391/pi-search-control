@@ -117,13 +117,42 @@ export function buildSearchPlan(
 	);
 }
 
-export function noUsableCredentialsMessage(profile: SearchProfile, credentials: ResolvedCredential[]): string {
+/**
+ * Optional diagnostics for the no-usable-route message: the active cooldown
+ * category per credential alias and whether the caller can act on a pointer to
+ * `/search-status`. Carries no key material or environment-variable names.
+ */
+export interface RouteDiagnostics {
+	cooldowns?: Record<string, ErrorCategory>;
+	interactive?: boolean;
+}
+
+/**
+ * A concise, secret-free explanation of why a Search Profile has no usable
+ * route. It names the profile, provider names, credential aliases, and error
+ * categories only, and appends a `/search-status` pointer for interactive
+ * callers.
+ */
+export function noUsableCredentialsMessage(
+	profile: SearchProfile,
+	credentials: ResolvedCredential[],
+	diagnostics: RouteDiagnostics = {},
+): string {
 	const declared = credentials.filter((credential) => profile.providers.includes(credential.provider));
-	const unavailable = declared.filter((credential) => !credential.available).map((credential) => credential.alias);
-	if (unavailable.length > 0) {
-		return `No available credentials for Search Profile "${profile.name}". Unavailable: ${unavailable.join(", ")}.`;
+	const parts: string[] = [`No usable route for Search Profile "${profile.name}".`];
+	if (declared.length === 0) {
+		parts.push(`No credentials declared for providers: ${profile.providers.join(", ")}.`);
+	} else {
+		const details = declared.map((credential) => {
+			const cooldown = diagnostics.cooldowns?.[credential.alias];
+			if (!credential.available) return `${credential.alias} (${credential.provider}, credential unavailable)`;
+			if (cooldown) return `${credential.alias} (${credential.provider}, cooling: ${cooldown})`;
+			return `${credential.alias} (${credential.provider}, not eligible)`;
+		});
+		parts.push(`Declared credentials: ${details.join("; ")}.`);
 	}
-	return `No credentials declared for Search Profile "${profile.name}" providers: ${profile.providers.join(", ")}.`;
+	if (diagnostics.interactive) parts.push("Run /search-status for diagnostics.");
+	return parts.join(" ");
 }
 
 /**

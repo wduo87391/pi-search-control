@@ -57,11 +57,12 @@ function makePi() {
 }
 
 /** A stand-in ExtensionContext with observable UI effects. */
-function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = null } = {}) {
+function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = null, sessionStartedAt = null } = {}) {
   const notifications = [];
   const statuses = new Map();
   const ctx = {
     mode,
+    hasUI: mode === 'tui' || mode === 'rpc',
     ui: {
       notify: (message, level) => notifications.push({ message, level }),
       setStatus: (key, text) => statuses.set(key, text),
@@ -69,7 +70,8 @@ function makeCtx({ mode = 'print', branch = [], sessionId = 'sess-1', select = n
     },
     sessionManager: {
       getBranch: () => branch,
-      getSessionId: () => sessionId
+      getSessionId: () => sessionId,
+      getHeader: () => (sessionStartedAt === null ? undefined : { timestamp: new Date(sessionStartedAt).toISOString() })
     }
   };
   return { ctx, notifications, statuses, last: () => notifications.at(-1) };
@@ -156,7 +158,7 @@ test('/search-profile completes declared profile names', async () => {
 
 test('/search-status reports the active profile, credential availability, and session usage', async () => {
   writeConfig(VALID_CONFIG);
-  const { commands, ctx, last } = await boot();
+  const { commands, ctx, last } = await boot({ mode: 'rpc' });
 
   await commands.get('search-status').handler('', ctx);
 
@@ -164,9 +166,10 @@ test('/search-status reports the active profile, credential availability, and se
   const text = last().message;
   assert.match(text, /Search Profile: research/);
   assert.match(text, /Provider order: exa > tavily/);
-  assert.match(text, /- exa-main: available/);
-  assert.match(text, /- brave-main: available/);
-  assert.match(text, /- brave \(not in this profile\): 1\/1 credentials available/);
+  assert.match(text, /Route: usable/);
+  assert.match(text, /- exa-main: available, eligible/);
+  assert.match(text, /- brave-main: available, eligible/);
+  assert.match(text, /- brave \(not in this profile\): 1\/1 credentials eligible, outside active profile/);
   assert.match(text, /This session: 0 Search Requests, 0 Provider Attempts \(0 succeeded, 0 failed\)/);
 });
 
@@ -186,21 +189,20 @@ test('/search-status reports per-provider and per-alias attempt counts for each 
     buckets: []
   }));
   try {
-    const { commands, ctx, last } = await boot();
+    const { commands, ctx, last } = await boot({ mode: 'rpc' });
 
     await commands.get('search-status').handler('', ctx);
 
     const text = last().message;
-    // Session grouping: only this session's attempt, grouped by provider and alias.
+    // Session grouping: only this session's attempt, grouped by provider.
     assert.match(text, /This session: 1 Search Requests, 1 Provider Attempts \(1 succeeded, 0 failed\)/);
-    assert.match(text, /  - tavily: 1 attempts \(1 ok, 0 fail\)/);
-    assert.match(text, /  credentials: tvly-main 1/);
-    // Today counts attempts from both sessions but requests only from known ones;
-    // the other-session exa attempt shows grouped.
-    assert.match(text, /Today: 1 requests, 2 attempts/);
-    assert.match(text, /  - exa: 1 attempts \(0 ok, 1 fail\)/);
-    // Estimates header no longer implies a consumed total.
-    assert.match(text, /Per-attempt estimates/);
+    assert.match(text, /- tavily \(in profile\): 1\/1 credentials eligible, route usable/);
+    assert.match(text, /this session: 1 ok, 0 fail/);
+    // Today counts attempts from both sessions; the other-session exa failure shows too.
+    assert.match(text, /Today: 1 Search Requests, 2 Provider Attempts \(1 succeeded, 1 failed\)/);
+    assert.match(text, /- exa \(in profile\): 1\/1 credentials eligible, route usable/);
+    // Per-attempt estimates stay labelled as estimates.
+    assert.match(text, /estimate: 1 requests .*\[estimate; rule v1/);
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }
@@ -211,13 +213,13 @@ test('/search-status marks a credential whose environment variable is missing as
   const saved = process.env.WIRING_EXA_KEY;
   delete process.env.WIRING_EXA_KEY;
   try {
-    const { commands, ctx, statuses, last } = await boot();
+    const { commands, ctx, statuses, last } = await boot({ mode: 'rpc' });
 
     await commands.get('search-status').handler('', ctx);
 
     const text = last().message;
-    assert.match(text, /- exa-main: unavailable/);
-    assert.match(text, /- exa: 0\/1 credentials available/);
+    assert.match(text, /- exa-main: unavailable, not eligible/);
+    assert.match(text, /- exa \(in profile\): 0\/1 credentials eligible, No usable route/);
     assert.match(statuses.get('search-profile'), /unavailable: exa/);
   } finally {
     process.env.WIRING_EXA_KEY = saved;
@@ -308,8 +310,10 @@ test('with no usable configuration the commands report the failure and no guidan
   assert.equal(statuses.get('search-profile'), 'search: config unavailable');
   assert.equal(await handlers.get('before_agent_start')({ systemPrompt: 'BASE' }, ctx), undefined);
 
-  await commands.get('search-status').handler('', ctx);
-  assert.match(last().message, /Search configuration unavailable:/);
+  const statusCtx = makeCtx({ mode: 'rpc' });
+  await commands.get('search-status').handler('', statusCtx.ctx);
+  assert.match(statusCtx.last().message, /Route: No usable route/);
+  assert.match(statusCtx.last().message, /Warning: Missing profiles/);
 
   await commands.get('search-profile').handler('quick', ctx);
   assert.equal(last().level, 'error');
@@ -341,11 +345,53 @@ test('the web_search and fetch tools are registered with their parameter schemas
 
 test('/search-status lists anysearch as a supported provider even when the profile omits it', async () => {
   writeConfig(VALID_CONFIG);
-  const { commands, ctx, last } = await boot();
+  const { commands, ctx, last } = await boot({ mode: 'rpc' });
 
   await commands.get('search-status').handler('', ctx);
 
-  assert.match(last().message, /- anysearch \(not in this profile\): 0\/0 credentials available/);
+  assert.match(last().message, /- anysearch \(not in this profile\): 0\/0 credentials eligible, outside active profile/);
+});
+
+test('/search-status in print and JSON modes performs no UI operation', async () => {
+  writeConfig(VALID_CONFIG);
+  const { commands } = await boot();
+
+  for (const mode of ['print', 'json']) {
+    const { ctx, notifications } = makeCtx({ mode });
+    await commands.get('search-status').handler('', ctx);
+    assert.equal(notifications.length, 0, `${mode} mode emits no notification`);
+  }
+});
+
+test('web_search passes interactive mode through to route diagnostics', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 200 });
+  try {
+    // No usable route: exa is in the profile but its env var is unset.
+    writeConfig(VALID_CONFIG);
+    const savedExa = process.env.WIRING_EXA_KEY;
+    const savedTavily = process.env.WIRING_TAVILY_KEY;
+    delete process.env.WIRING_EXA_KEY;
+    delete process.env.WIRING_TAVILY_KEY;
+    try {
+      const { tools } = await boot({ mode: 'tui' });
+      const { ctx } = makeCtx({ mode: 'tui' });
+      await assert.rejects(
+        () => tools.get('web_search').execute('c1', { query: 'q' }, undefined, undefined, ctx),
+        (err) => {
+          assert.match(err.message, /No usable route for Search Profile "research"/);
+          assert.match(err.message, /Run \/search-status for diagnostics\./);
+          assert.ok(!err.message.includes('WIRING_EXA_KEY'));
+          return true;
+        }
+      );
+    } finally {
+      process.env.WIRING_EXA_KEY = savedExa;
+      process.env.WIRING_TAVILY_KEY = savedTavily;
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('web_search routes an anysearch profile end to end without leaking extension data into markdown', async () => {

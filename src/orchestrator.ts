@@ -2,6 +2,7 @@ import type { SearchControlConfig, SearchProfile } from "./config.ts";
 import type { ResolvedCredential } from "./credentials.ts";
 import { estimateAttempt } from "./estimates.ts";
 import {
+	activeCooldowns,
 	loadHealth,
 	penaltiesFromHealth,
 	recordCooldowns,
@@ -13,6 +14,7 @@ import {
 	classifyError,
 	loadLedger,
 	recordLedgerEvents,
+	type ErrorCategory,
 	type LedgerEvent,
 	type LedgerStore,
 } from "./ledger.ts";
@@ -67,6 +69,11 @@ export interface HealthPort {
 	penalties(now: number): Record<string, PenaltyState>;
 	/** Enter a time-bounded cooldown for any failure whose category triggers one. */
 	record(failures: readonly CooldownFailure[], now: number): void;
+	/**
+	 * Optional: active cooldown category per alias, used to build safe route
+	 * diagnostics. Absent means no categories are known.
+	 */
+	cooldowns?(now: number): Record<string, ErrorCategory>;
 }
 
 /**
@@ -101,6 +108,7 @@ export const noopLedger: LedgerPort = {
 export const noHealth: HealthPort = {
 	penalties: () => ({}),
 	record: () => {},
+	cooldowns: () => ({}),
 };
 
 /**
@@ -115,6 +123,13 @@ export function createHealthPort(
 	return {
 		penalties(now: number): Record<string, PenaltyState> {
 			return penaltiesFromHealth(loadHealth(store, now).state, now);
+		},
+		cooldowns(now: number): Record<string, ErrorCategory> {
+			const categories: Record<string, ErrorCategory> = {};
+			for (const [alias, entry] of Object.entries(activeCooldowns(loadHealth(store, now).state, now))) {
+				categories[alias] = entry.category;
+			}
+			return categories;
 		},
 		record(failures: readonly CooldownFailure[], now: number): void {
 			try {
@@ -168,6 +183,8 @@ export interface OrchestratorQuery {
 	profile: SearchProfile;
 	sessionId: string;
 	options?: Partial<SearchOptions>;
+	/** Whether the caller can act on a `/search-status` pointer in an error. */
+	interactive?: boolean;
 }
 
 /** A routed query's outcome; failures carry their message, successes their markdown. */
@@ -181,6 +198,8 @@ export interface SearchBatchInput {
 	profile: SearchProfile;
 	sessionId: string;
 	options?: Partial<SearchOptions>;
+	/** Whether the caller can act on a `/search-status` pointer in an error. */
+	interactive?: boolean;
 	/** Optional progress callback; the Pi surface uses it to stream updates. */
 	onQuery?(current: number, total: number, query: string): void;
 }
@@ -260,6 +279,15 @@ function readHealthPenalties(deps: OrchestratorDeps, at: number): Record<string,
 	}
 }
 
+function readHealthCooldowns(deps: OrchestratorDeps, at: number): Record<string, ErrorCategory> {
+	// Cooldown categories are diagnostics: a read failure degrades to none.
+	try {
+		return deps.health.cooldowns?.(at) ?? {};
+	} catch {
+		return {};
+	}
+}
+
 function recordCooldown(deps: OrchestratorDeps, failure: FailedAttempt, at: number): void {
 	// Cooldown state is diagnostics: a write failure must never fail a search.
 	try {
@@ -313,7 +341,12 @@ export async function orchestrateSearch(
 			buildAccountingEvents(config, sessionId, requestId, profile.name, at, [], undefined),
 			at,
 		);
-		throw new Error(noUsableCredentialsMessage(profile, credentials));
+		throw new Error(
+			noUsableCredentialsMessage(profile, credentials, {
+				cooldowns: readHealthCooldowns(deps, at),
+				interactive: query.interactive,
+			}),
+		);
 	}
 	const searchOptions: SearchOptions = {
 		numResults: options.numResults ?? config.search.numResults,
@@ -388,6 +421,7 @@ export async function orchestrateBatch(
 						profile: input.profile,
 						sessionId: input.sessionId,
 						options: input.options,
+						interactive: input.interactive,
 					},
 					deps,
 				),

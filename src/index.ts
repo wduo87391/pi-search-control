@@ -2,22 +2,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { loadConfig, PROVIDERS, readConfigFile, type SearchControlConfig, type SearchProfile } from "./config.ts";
+import { loadConfig, readConfigFile, type SearchControlConfig, type SearchProfile } from "./config.ts";
 import { resolveCredentials } from "./credentials.ts";
-import { estimateAttempt, formatEstimate } from "./estimates.ts";
 import { fetchOne } from "./fetch.ts";
 import { composeGuidance } from "./guidance.ts";
-import { createFileHealthStore, describeCooldowns, loadHealth } from "./health.ts";
-import {
-	createFileLedgerStore,
-	loadLedger,
-	summarizeEvents,
-	summarizePeriod,
-	type GroupCounts,
-} from "./ledger.ts";
+import { createFileHealthStore, loadHealth } from "./health.ts";
+import { createFileLedgerStore, loadLedger } from "./ledger.ts";
 import { searchWithTarget } from "./search.ts";
 import { reloadActiveState, type ActiveSearchState } from "./reload.ts";
-import { createThresholdWarner, describeThresholds } from "./thresholds.ts";
+import { buildStatusSnapshot, formatStatusText } from "./status.ts";
+import { createThresholdWarner } from "./thresholds.ts";
 import {
 	createHealthPort,
 	createLedgerPort,
@@ -136,85 +130,42 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus(STATUS_KEY, text);
 	}
 
-	function formatSearchStatus(ctx: ExtensionContext): string {
-		if (!currentConfig) {
-			return `Search configuration unavailable: ${configError ?? "unknown error"}`;
-		}
-		const config = currentConfig;
-		const name = activeProfileName ?? config.defaultProfile;
-		const profile = config.profiles[name];
-		const lines: string[] = [];
-		lines.push(`Search Profile: ${name}`);
-		lines.push(`Provider order: ${profile ? profile.providers.join(" > ") : "unknown"}`);
-		if (profileWarning) lines.push(`Warning: ${profileWarning}`);
-
-		const resolved = resolveCredentials(config.credentials, process.env);
+	/**
+	 * Collect one immutable status snapshot from the active configuration, the
+	 * pruned usage ledger and health stores, and the session's own start time.
+	 * All reads are best-effort; the snapshot never throws.
+	 */
+	function collectStatus(ctx: ExtensionContext): ReturnType<typeof buildStatusSnapshot> {
 		const now = Date.now();
-		const healthRead = loadHealth(healthStore, now);
-		const cooldowns = describeCooldowns(healthRead.state, now);
-		lines.push("Providers:");
-		for (const provider of PROVIDERS) {
-			const credentials = resolved.filter((credential) => credential.provider === provider);
-			const available = credentials.filter((credential) => credential.available).length;
-			const inProfile = profile?.providers.includes(provider) ?? false;
-			lines.push(
-				`- ${provider}${inProfile ? "" : " (not in this profile)"}: ` +
-				`${available}/${credentials.length} credentials available`
-			);
-			for (const credential of credentials) {
-				lines.push(`  - ${credential.alias}: ${credential.available ? "available" : "unavailable"}`);
+		const config = currentConfig;
+		const credentials = config ? resolveCredentials(config.credentials, process.env) : [];
+		const { state: ledger, warning: ledgerReadWarning } = loadLedger(ledgerStore, now);
+		const { state: health, warning: healthReadWarning } = loadHealth(healthStore, now);
+		let sessionStartedAt: number | undefined;
+		try {
+			const header = ctx.sessionManager.getHeader();
+			if (header?.timestamp) {
+				const parsed = Date.parse(header.timestamp);
+				if (Number.isFinite(parsed)) sessionStartedAt = parsed;
 			}
+		} catch {
+			// Session header is best-effort metadata; its absence just leaves the
+			// session totals unmarked rather than failing the command.
 		}
-		if (cooldowns.length > 0) {
-			lines.push("Cooldowns:");
-			for (const cooldown of cooldowns) lines.push(`- ${cooldown}`);
-		}
-
-		const { state, warning } = loadLedger(ledgerStore, now);
-		const attemptsByAlias: Record<string, number[]> = {};
-		for (const event of state.events) {
-			if (event.kind === "attempt") (attemptsByAlias[event.alias] ??= []).push(event.at);
-		}
-		const thresholds = describeThresholds(resolved, attemptsByAlias, now);
-		if (thresholds.length > 0) {
-			lines.push("Thresholds:");
-			for (const threshold of thresholds) lines.push(`- ${threshold}`);
-		}
-
-		const session = summarizeEvents(state.events, { sessionId: ctx.sessionManager.getSessionId() });
-		lines.push(
-			`This session: ${session.requests} Search Requests, ${session.attempts} Provider Attempts ` +
-			`(${session.success} succeeded, ${session.failure} failed)`
-		);
-		pushGroupedCounts(lines, session);
-
-		const daily = summarizePeriod(state.events, now, "daily");
-		const monthly = summarizePeriod(state.events, now, "monthly");
-		lines.push(`Today: ${daily.requests} requests, ${daily.attempts} attempts`);
-		pushGroupedCounts(lines, daily);
-		lines.push(`This month: ${monthly.requests} requests, ${monthly.attempts} attempts`);
-		pushGroupedCounts(lines, monthly);
-
-		const recentDaily = state.buckets
-			.filter((bucket) => bucket.granularity === "daily")
-			.sort((a, b) => a.period.localeCompare(b.period))
-			.slice(-5);
-		for (const bucket of recentDaily) {
-			lines.push(`- ${bucket.period}: ${bucket.requests} requests, ${bucket.attempts} attempts`);
-		}
-
-		lines.push("Per-attempt estimates (not provider-authoritative balances; not consumed totals):");
-		for (const provider of PROVIDERS) {
-			const period = monthly.byProvider[provider];
-			const consumed = period ? ` this month: ${period.attempts} attempts` : "";
-			lines.push(`- ${provider}: ${formatEstimate(estimateAttempt(config.estimates[provider]))}${consumed}`);
-		}
-
-		const ledgerIssue = warning ?? ledgerWarning;
-		const healthIssue = healthRead.warning ?? healthWarning;
-		if (ledgerIssue) lines.push(`Warning: ${ledgerIssue}`);
-		if (healthIssue) lines.push(`Warning: ${healthIssue}`);
-		return lines.join("\n");
+		return buildStatusSnapshot({
+			now,
+			sessionId: ctx.sessionManager.getSessionId(),
+			sessionStartedAt,
+			activeProfileName: activeProfileName ?? config?.defaultProfile,
+			profileWarning,
+			config,
+			configError,
+			credentials,
+			ledger,
+			ledgerWarning: ledgerReadWarning ?? ledgerWarning,
+			health,
+			healthWarning: healthReadWarning ?? healthWarning,
+		});
 	}
 
 	function resolveProfile(): SearchProfile {
@@ -227,24 +178,6 @@ export default function (pi: ExtensionAPI) {
 			throw new Error(`Search Profile "${name}" is not declared in profiles.`);
 		}
 		return profile;
-	}
-
-	/**
-	 * Append per-provider and per-alias attempt counts for a ledger summary.
-	 * Skips the block when the summary has no attempts. Pure formatting.
-	 */
-	function pushGroupedCounts(lines: string[], summary: { attempts: number; byProvider: Record<string, GroupCounts>; byAlias: Record<string, GroupCounts> }): void {
-		if (summary.attempts === 0) return;
-		for (const provider of PROVIDERS) {
-			const counts = summary.byProvider[provider];
-			if (!counts) continue;
-			lines.push(`  - ${provider}: ${counts.attempts} attempts (${counts.success} ok, ${counts.failure} fail)`);
-		}
-		const aliases = Object.keys(summary.byAlias).sort();
-		if (aliases.length > 0) {
-			const parts = aliases.map((alias) => `${alias} ${summary.byAlias[alias].attempts}`);
-			lines.push(`  credentials: ${parts.join(", ")}`);
-		}
 	}
 
 	function selectProfile(name: string, ctx: ExtensionContext): void {
@@ -297,7 +230,10 @@ export default function (pi: ExtensionAPI) {
 		description: "Show search provider, credential, and usage status",
 		handler: async (_args, ctx) => {
 			if (!currentConfig) refreshConfig();
-			ctx.ui.notify(formatSearchStatus(ctx), "info");
+			// Print and JSON modes have no observable command output and Pi does not
+			// execute interactive commands through their prompts; do not claim support.
+			if (!ctx.hasUI) return;
+			ctx.ui.notify(formatStatusText(collectStatus(ctx)), "info");
 		},
 	});
 
@@ -404,6 +340,7 @@ export default function (pi: ExtensionAPI) {
 					profile,
 					sessionId: ctx.sessionManager.getSessionId(),
 					options: { numResults: config.search.numResults, signal },
+					interactive: ctx.hasUI === true,
 					onQuery: (current, total, query) => {
 						onUpdate?.({
 							content: [{ type: "text", text: `Searching ${current}/${total}: ${query}` }],

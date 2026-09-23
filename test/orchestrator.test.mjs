@@ -537,14 +537,40 @@ test('cooldown state survives a new session over the same store', async () => {
   assert.deepEqual(calls, ['tvly-personal']);
 });
 
-test('a profile with no available credentials keeps the existing message style', async () => {
+test('a profile with no available credentials reports a secret-free no-usable-route error', async () => {
   const { deps } = makeDeps({
     resolveCredentials: (cfg) => resolveCredentials(cfg.credentials, {})
   });
 
   await assert.rejects(
     () => orchestrateSearch(input({ profile: tavilyOnly }), deps),
-    /No available credentials for Search Profile "tavily"\. Unavailable: tvly-work, tvly-personal\./
+    (err) => {
+      assert.match(err.message, /No usable route for Search Profile "tavily"\./);
+      assert.match(err.message, /tvly-work \(tavily, credential unavailable\)/);
+      assert.match(err.message, /tvly-personal \(tavily, credential unavailable\)/);
+      assert.ok(!err.message.includes('TAVILY_API_KEY'), 'never reveals environment-variable names');
+      assert.ok(!err.message.includes('/search-status'), 'non-interactive callers get no pointer');
+      return true;
+    }
+  );
+});
+
+test('the no-usable-route error names cooldown categories and points interactive callers to /search-status', async () => {
+  const { deps } = makeDeps({
+    health: {
+      penalties: () => ({ 'tvly-work': 'cooling', 'tvly-personal': 'cooling' }),
+      record: () => {},
+      cooldowns: () => ({ 'tvly-work': 'quota', 'tvly-personal': 'rate_limit' })
+    }
+  });
+
+  await assert.rejects(
+    () => orchestrateSearch(input({ profile: tavilyOnly, interactive: true }), deps),
+    (err) => {
+      assert.match(err.message, /tvly-work \(tavily, cooling: quota\)/);
+      assert.match(err.message, /Run \/search-status for diagnostics\./);
+      return true;
+    }
   );
 });
 
